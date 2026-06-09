@@ -1,6 +1,7 @@
 """Offline suite — no docker required. Exercises the real netlab render + the store."""
 from pathlib import Path
 
+import yaml
 from conftest import FIXTURES
 
 from netlab_mcp.config import check_platforms
@@ -67,6 +68,29 @@ def test_generate_topology_is_parse_valid():
     gen = topogen.generate("ebgp peering", ["srlinux", "frr"])
     assert gen["module"] == "bgp"
     assert transform.validate_topology(gen["topology_yaml"])["ok"]
+
+
+def test_bgp_validation_anchored_on_capable_node():
+    # frr has a netlab BGP validation plugin, srlinux does not. The session test must
+    # run on the frr node regardless of ordering, asserting the neighbor toward the
+    # other node — otherwise netlab silently skips it and reports a false "pass".
+    for plats, want_node, want_neighbor in (
+        (["srlinux", "frr"], "peer", "dut"),   # peer=frr is capable
+        (["frr", "srlinux"], "dut", "peer"),   # dut=frr is capable
+    ):
+        topo = yaml.safe_load(topogen.generate("ebgp", plats)["topology_yaml"])
+        sess = topo["validate"]["session"]
+        assert sess["nodes"] == [want_node], plats
+        assert f"'{want_neighbor}'" in sess["plugin"], plats
+
+
+def test_bgp_no_validation_when_no_capable_device():
+    # Neither srlinux nor vyos ships a BGP validation plugin: emit NO validate block
+    # (a skipped test would be recorded as a false pass) and warn instead.
+    gen = topogen.generate("ebgp", ["srlinux", "vyos"])
+    topo = yaml.safe_load(gen["topology_yaml"])
+    assert "validate" not in topo
+    assert any("cannot be auto-verified" in w for w in gen["warnings"])
 
 
 def test_transform_rejects_garbage():

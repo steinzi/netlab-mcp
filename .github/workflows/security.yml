@@ -1,0 +1,37 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * 1"  # Monday 03:00 UTC
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package + pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -e .
+      # Advisory at first: surfaces CVEs without blocking the merge. Flip to a hard
+      # failure (drop continue-on-error) once the dependency baseline is clean.
+      - name: pip-audit
+        continue-on-error: true
+        run: pip-audit --desc

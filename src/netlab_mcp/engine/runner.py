@@ -36,7 +36,16 @@ class RunResult:
         return self.returncode == 0
 
     def error_lines(self) -> list[str]:
-        """Best-effort extraction of netlab error/warning lines for tool output."""
+        """Best-effort extraction of netlab error/warning lines for tool output.
+
+        Includes netlab's structured error categories (IncorrectValue/Type, MissingValue,
+        ...) which don't contain the word "error" but carry the actionable message.
+        """
+        markers = (
+            "error", "fatal", "[warning]", "traceback", "errors encountered",
+            "incorrectvalue", "incorrecttype", "incorrectattr", "incorrectkey",
+            "missingvalue", "missingdependency", "wrongtype",
+        )
         out: list[str] = []
         for stream in (self.stderr, self.stdout):
             for line in (stream or "").splitlines():
@@ -44,7 +53,7 @@ class RunResult:
                 if not s:
                     continue
                 low = s.lower()
-                if "error" in low or "fatal" in low or "[warning]" in low or "traceback" in low:
+                if any(m in low for m in markers) and s not in out:
                     out.append(s)
         if not out and not self.ok:
             tail = (self.stderr or self.stdout or "").strip().splitlines()[-5:]

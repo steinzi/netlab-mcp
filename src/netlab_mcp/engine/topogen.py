@@ -14,16 +14,23 @@ _KNOWN_MODULES = ["evpn", "vxlan", "ospf", "isis", "eigrp", "mpls", "vrf", "vlan
 _DEFAULT_PLATFORMS = ["srlinux", "frr"]
 
 
-def detect_module(intent: str) -> str:
+def match_module(intent: str) -> str | None:
+    """Return the module keyword found in intent, or None if nothing matched."""
     low = (intent or "").lower()
     for m in _KNOWN_MODULES:
         if m in low:
             return m
-    return "bgp"
+    return None
+
+
+def detect_module(intent: str) -> str:
+    """Module from intent, defaulting to bgp when nothing matches."""
+    return match_module(intent) or "bgp"
 
 
 def generate(intent: str, platforms: list[str] | None) -> dict:
-    module = detect_module(intent)
+    matched = match_module(intent)
+    module = matched or "bgp"
     plats = list(platforms) if platforms else list(_DEFAULT_PLATFORMS)
     dut = plats[0]
     peer = plats[1] if len(plats) > 1 else plats[0]
@@ -33,6 +40,13 @@ def generate(intent: str, platforms: list[str] | None) -> dict:
         "MVP generator is template-based (2-node lab). Treat the result as a starting point "
         "and refine attributes for your scenario.",
     ]
+    if matched is None:
+        warnings.append(
+            "Intent did not match a known module keyword; defaulted to 'bgp'. "
+            f"Name a module to be explicit (one of: {', '.join(_KNOWN_MODULES)})."
+        )
+    else:
+        notes.append(f"Matched module '{module}' from the intent.")
 
     topo: dict = {"provider": "clab", "module": [module], "nodes": {}, "links": ["dut-peer"]}
 

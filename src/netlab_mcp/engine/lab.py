@@ -11,6 +11,7 @@ from ..store import matrix
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
+from .transform import resolved_node_devices, resolved_tools
 
 
 def _record(
@@ -60,6 +61,52 @@ def validate_in_lab(
     timeout_s: int = 600,
 ) -> dict:
     """Deploy + validate a topology in containerlab and persist the verdict."""
+    # Policy checks run on netlab's RESOLVED node devices, before any probe or deploy, so
+    # disallowed NOSes are rejected regardless of the caller's `platforms` claim — and we
+    # fail closed when devices can't be resolved (no metadata-absence loophole).
+    resolved = resolved_node_devices(topology_yaml)
+    if not resolved["ok"]:
+        return {"ok": False, "verdict": "invalid", "errors": resolved["errors"],
+                "reason": "topology devices could not be resolved; refusing to deploy",
+                "disclaimer": DISCLAIMER}
+    node_device = resolved["node_device"]
+    derived = set(node_device.values())
+    if not derived:
+        return {"ok": False, "verdict": "rejected",
+                "reason": "no devices resolved from topology; refusing to deploy",
+                "disclaimer": DISCLAIMER}
+
+    allowed, rejected, reason = check_platforms(sorted(derived))
+    if not allowed:
+        return {"ok": False, "verdict": "rejected", "rejected": rejected, "reason": reason,
+                "derived_devices": sorted(derived), "disclaimer": DISCLAIMER}
+
+    declared = set(platforms or [])
+    if declared and declared != derived:
+        return {
+            "ok": False,
+            "verdict": "mismatch",
+            "reason": f"platforms argument {sorted(declared)} does not match the resolved "
+                      f"devices in the topology {sorted(derived)}; refusing to deploy.",
+            "derived_devices": sorted(derived),
+            "disclaimer": DISCLAIMER,
+        }
+
+    # External tools (edgeshark, nso, ...) run arbitrary Docker containers outside the NOS
+    # allow-list during `netlab up`. Reject any topology that declares them — the device
+    # allow-list alone does not cover this spawn vector. `--no-tools` below is the backstop.
+    tools = resolved_tools(topology_yaml)
+    if tools["tools"]:
+        return {
+            "ok": False,
+            "verdict": "rejected",
+            "reason": "topology declares external tools that start unreviewed Docker "
+                      "containers outside the allowed image set; refusing to deploy. "
+                      "Remove the 'tools:' section.",
+            "tools": tools["tools"],
+            "disclaimer": DISCLAIMER,
+        }
+
     probe = lab_available()
     if not probe["ok"]:
         return {
@@ -71,13 +118,9 @@ def validate_in_lab(
                     "Offline tools (render_config, query_compatibility) work without it.",
         }
 
-    ok, rejected, reason = check_platforms(platforms)
-    if not ok:
-        return {"ok": False, "verdict": "rejected", "rejected": rejected, "reason": reason,
-                "disclaimer": DISCLAIMER}
-
-    dut = dut_platform or (platforms[0] if platforms else "unknown")
-    peers = [p for p in platforms if p != dut] or platforms
+    # Roles recorded from netlab's resolved node->device map, not the caller's platforms arg.
+    dut = node_device.get("dut") or dut_platform or (sorted(derived)[0] if derived else "unknown")
+    peers = sorted({d for n, d in node_device.items() if n != "dut"}) or sorted(derived - {dut})
     scenario = scenario or f"{module}-{dut}-lab"
     version = netlab_version()
 
@@ -86,7 +129,9 @@ def validate_in_lab(
         try:
             (wd / "topology.yml").write_text(topology_yaml)
 
-            up = run_netlab(["up"], cwd=wd, timeout=timeout_s)
+            # --no-tools: hard backstop so external tools never start even if detection above
+            # somehow misses one (defense in depth alongside the explicit reject).
+            up = run_netlab(["up", "--no-tools"], cwd=wd, timeout=timeout_s)
             if not up.ok:
                 stages = {"stage_create": "pass", "stage_up": "fail",
                           "stage_config": None, "stage_validate": None}

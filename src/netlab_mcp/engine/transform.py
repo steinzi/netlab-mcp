@@ -1,25 +1,113 @@
-"""Validate a topology by parsing it through `netlab create` (no docker, no devices)."""
+"""Topology transform helpers: data-model validation + authoritative device resolution.
+
+Both run netlab's transform without provider/host checks (no docker), so they work the same
+on any host. Device resolution goes through netlab itself rather than scraping the raw YAML —
+the raw YAML can name a device via dotted keys (`defaults.device: nxos`), groups, or netlab
+defaults that a literal `device:` scan would miss.
+"""
 from __future__ import annotations
+
+import json
 
 from .runner import cleanup, new_workdir, run_netlab
 
 
 def validate_topology(topology_yaml: str, timeout: int = 120) -> dict:
-    """Parse + transform a topology. Returns {ok, errors, stdout, stderr}.
+    """Validate a topology's data model only. Returns {ok, errors, stdout, stderr}.
 
-    `netlab create` performs the full data-model transform and writes provider files;
-    a zero exit code means the topology is structurally valid and renderable. We run it
-    in a throwaway dir and discard the artifacts.
+    Uses `netlab create -o yaml`, which runs the full parse + data-model transform but
+    emits transformed YAML INSTEAD of provider files. That skips containerlab host checks
+    (e.g. the `/lib/modules` bind that fails on macOS), so `ok` means "the topology is
+    sound" regardless of the host — not "this host can launch it". Genuine data-model
+    errors (unknown device, bad attribute, malformed YAML) still produce a non-zero exit.
+    Run in a throwaway dir; artifacts discarded.
     """
     wd = new_workdir("nlmcp-xform-")
     try:
         (wd / "topology.yml").write_text(topology_yaml)
-        r = run_netlab(["create", "topology.yml"], cwd=wd, timeout=timeout)
+        r = run_netlab(["create", "topology.yml", "-o", "yaml"], cwd=wd, timeout=timeout)
         return {
             "ok": r.ok,
             "errors": [] if r.ok else r.error_lines(),
             "stdout": r.stdout,
             "stderr": r.stderr,
         }
+    finally:
+        cleanup(wd)
+
+
+def _json_after_banner(text: str):
+    """Parse the JSON object after netlab's `[INFO] Using lab topology file ...` banner.
+
+    The banner itself contains a '[' ("[INFO]"), so we anchor on the first '{' — the
+    `nodes` inspect expression always yields a JSON object.
+    """
+    i = text.find("{")
+    if i < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[i:])
+        return obj
+    except json.JSONDecodeError:
+        return None
+
+
+def resolved_node_devices(topology_yaml: str, timeout: int = 120) -> dict:
+    """Resolve each node's EFFECTIVE device the way netlab does (defaults, dotted keys,
+    groups), via `netlab inspect -t`. Host-independent — no containerlab bind checks.
+
+    Returns {ok, node_device: {node: device}, errors}. `ok` is False when netlab cannot
+    transform the topology (e.g. no device resolves anywhere) — callers MUST fail closed
+    on a non-ok result or an empty device set rather than treating it as "nothing to check".
+    """
+    wd = new_workdir("nlmcp-resolve-")
+    try:
+        (wd / "topology.yml").write_text(topology_yaml)
+        r = run_netlab(
+            ["inspect", "-t", "topology.yml", "nodes", "--format", "json"],
+            cwd=wd,
+            timeout=timeout,
+        )
+        if not r.ok:
+            return {"ok": False, "node_device": {}, "errors": r.error_lines()}
+        data = _json_after_banner(r.stdout)
+        if not isinstance(data, dict):
+            return {"ok": False, "node_device": {},
+                    "errors": ["could not parse 'netlab inspect' output"]}
+        node_device = {
+            name: v["device"]
+            for name, v in data.items()
+            if isinstance(v, dict) and isinstance(v.get("device"), str)
+        }
+        return {"ok": True, "node_device": node_device, "errors": []}
+    finally:
+        cleanup(wd)
+
+
+def resolved_tools(topology_yaml: str, timeout: int = 120) -> dict:
+    """Resolve the external tools netlab would start during `up` (edgeshark, nso, ...).
+
+    These run arbitrary Docker containers outside the NOS image set — some privileged or
+    host-integrated — so the lab path must police them, not just node devices.
+
+    Returns {ok, tools: [names], errors}. A topology with no `tools:` yields ok=True, tools=[]
+    (netlab raises "name 'tools' is not defined", which we treat as "none"). A genuine
+    transform error yields ok=False so callers can fail closed.
+    """
+    wd = new_workdir("nlmcp-tools-")
+    try:
+        (wd / "topology.yml").write_text(topology_yaml)
+        r = run_netlab(
+            ["inspect", "-t", "topology.yml", "tools", "--format", "json"],
+            cwd=wd,
+            timeout=timeout,
+        )
+        if r.ok:
+            data = _json_after_banner(r.stdout)
+            return {"ok": True, "tools": sorted(data.keys()) if isinstance(data, dict) else [],
+                    "errors": []}
+        if "'tools' is not defined" in (r.stdout + r.stderr):
+            return {"ok": True, "tools": [], "errors": []}
+        return {"ok": False, "tools": [], "errors": r.error_lines()}
     finally:
         cleanup(wd)

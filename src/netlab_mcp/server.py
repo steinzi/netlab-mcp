@@ -11,7 +11,6 @@ from fastmcp import FastMCP
 
 from .config import NETLAB_EXAMPLES, allowed_platforms, check_platforms
 from .engine import compat, lab, render, topo, topogen, transform
-from .engine.probes import lab_available
 from .engine.runner import netlab_version
 from .models import DISCLAIMER
 from .store import matrix

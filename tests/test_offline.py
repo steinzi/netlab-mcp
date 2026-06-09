@@ -2,8 +2,8 @@
 from pathlib import Path
 
 import yaml
-from conftest import FIXTURES
 
+from conftest import FIXTURES
 from netlab_mcp.config import check_platforms
 from netlab_mcp.engine import compat, lab, render, topo, topogen, transform
 from netlab_mcp.models import DISCLAIMER

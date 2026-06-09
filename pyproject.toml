@@ -1,22 +1,48 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "netlab-mcp"
 version = "0.1.0"
 description = "MCP server that wraps ipspace/netlab as an engine to serve validated, lab-tested network device configs to LLMs."
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Steinzi", email = "steinn@verdi.is" }]
+keywords = ["mcp", "netlab", "containerlab", "networking", "llm", "bgp", "network-automation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Networking",
+  "Topic :: Software Development :: Libraries",
+]
 dependencies = [
   "fastmcp>=2.0",
-  "networklab>=26.06",
+  "networklab>=26.06,<27",
   "python-box>=7.2",
   "pydantic>=2",
   "PyYAML>=6",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/steinzi/netlab-mcp"
+Repository = "https://github.com/steinzi/netlab-mcp"
+Issues = "https://github.com/steinzi/netlab-mcp/issues"
 
 [project.scripts]
 netlab-mcp = "netlab_mcp.server:main"
@@ -24,8 +50,24 @@ netlab-mcp = "netlab_mcp.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/netlab_mcp"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
 [tool.pytest.ini_options]
+addopts = "--strict-markers"
 markers = [
   "docker: requires docker + containerlab (the live lab path); skipped when absent",
 ]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# scripts/ is dev tooling, not shipped library code; the diagram generator has long data lines.
+"scripts/*" = ["E501"]

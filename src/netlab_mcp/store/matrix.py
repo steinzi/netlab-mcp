@@ -94,13 +94,18 @@ def query(
 ) -> list[dict]:
     where, params = [], []
     if module:
-        where.append("module = ?"); params.append(module)
+        where.append("module = ?")
+        params.append(module)
     if dut_platform:
-        where.append("dut_platform = ?"); params.append(dut_platform)
+        where.append("dut_platform = ?")
+        params.append(dut_platform)
     if netlab_version:
-        where.append("netlab_version = ?"); params.append(netlab_version)
+        where.append("netlab_version = ?")
+        params.append(netlab_version)
     if verdicts:
-        where.append("verdict IN (%s)" % ", ".join("?" for _ in verdicts)); params.extend(verdicts)
+        placeholders = ", ".join("?" for _ in verdicts)
+        where.append(f"verdict IN ({placeholders})")
+        params.extend(verdicts)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     conn = _connect()
     try:
@@ -118,7 +123,8 @@ def get_known_good(module: str, platform: str, netlab_version: str | None = None
     where = ["module = ?", "dut_platform = ?", "verdict IN ('pass','warning')"]
     params: list = [module, platform]
     if netlab_version:
-        where.append("netlab_version = ?"); params.append(netlab_version)
+        where.append("netlab_version = ?")
+        params.append(netlab_version)
     conn = _connect()
     try:
         row = conn.execute(

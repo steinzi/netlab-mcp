@@ -1,0 +1,22 @@
+# Canned netlab device-module-test results.yaml for harvest tests.
+ebgp-test:
+  create: true
+  up: true
+  config: true
+  validate: true
+  _version: "26.06"
+  _image: "ghcr.io/nokia/srlinux:26.3.2"
+  _timestamp: "2026-01-01T00:00:00"
+warn-test:
+  create: true
+  up: true
+  config: true
+  validate:
+    warning:
+      - "minor convergence warning"
+  _version: "26.06"
+fail-test:
+  create: true
+  up: false
+  _version: "26.06"
+ignored-nondict: "this entry is not a dict and must be skipped"

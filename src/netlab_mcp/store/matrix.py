@@ -42,7 +42,10 @@ def _norm(rec: dict) -> dict:
     r = dict(rec)
     r.setdefault("scenario", "")
     r.setdefault("provider", "clab")
-    r.setdefault("ts", _now())
+    # ts is NOT NULL; callers (e.g. harvest) may pass an explicit None when the source
+    # has no timestamp, so coerce any falsy value — setdefault alone wouldn't replace None.
+    if not r.get("ts"):
+        r["ts"] = _now()
     pp = r.get("peer_platforms", [])
     r["peer_platforms"] = json.dumps(sorted(pp)) if isinstance(pp, list) else (pp or "[]")
     w = r.get("warnings", [])

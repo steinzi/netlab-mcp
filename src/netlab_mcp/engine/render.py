@@ -11,7 +11,7 @@ from pathlib import Path
 from ..config import check_platforms
 from ..models import DISCLAIMER
 from .runner import RunResult, cleanup, new_workdir, run_netlab
-from .topo import devices_in_topology
+from .transform import resolved_node_devices
 
 
 def _read(path: Path) -> str | None:
@@ -54,6 +54,18 @@ def _fail(stage: str, r: RunResult, clab: str | None = None) -> dict:
     }
 
 
+def _policy_fail(errors: list[str], rejected: list[str] | None = None) -> dict:
+    return {
+        "ok": False,
+        "stage": "policy",
+        "errors": errors,
+        "rejected": rejected or [],
+        "per_node": {},
+        "clab_yaml": None,
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def render_config(
     topology_yaml: str,
     nodes: list[str] | None = None,
@@ -66,19 +78,17 @@ def render_config(
     If keep_dir is True the workdir is left on disk and its path is returned as `workdir`
     (used by the lab path and the known-good cache).
     """
-    # Enforce the platform allow-list on the devices the topology actually names —
-    # not on caller metadata — so a forbidden device can't be smuggled in via the YAML.
-    allowed, rejected, reason = check_platforms(sorted(devices_in_topology(topology_yaml)))
+    # Enforce the allow-list on netlab's RESOLVED node devices (honors defaults/dotted keys/
+    # groups), failing closed if devices can't be resolved — never treat "unknown" as allowed.
+    resolved = resolved_node_devices(topology_yaml)
+    if not resolved["ok"]:
+        return _policy_fail(resolved["errors"] or ["topology devices could not be resolved"])
+    devices = sorted(set(resolved["node_device"].values()))
+    if not devices:
+        return _policy_fail(["no devices resolved from topology; refusing to render"])
+    allowed, rejected, reason = check_platforms(devices)
     if not allowed:
-        return {
-            "ok": False,
-            "stage": "policy",
-            "errors": [reason],
-            "rejected": rejected,
-            "per_node": {},
-            "clab_yaml": None,
-            "disclaimer": DISCLAIMER,
-        }
+        return _policy_fail([reason], rejected=rejected)
 
     wd = new_workdir("nlmcp-render-")
     try:

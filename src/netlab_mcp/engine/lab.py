@@ -11,7 +11,7 @@ from ..store import matrix
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
-from .topo import devices_in_topology, node_device_map
+from .transform import resolved_node_devices
 
 
 def _record(
@@ -61,9 +61,21 @@ def validate_in_lab(
     timeout_s: int = 600,
 ) -> dict:
     """Deploy + validate a topology in containerlab and persist the verdict."""
-    # Policy checks run on the ACTUAL topology devices, before any capability probe or
-    # deploy, so disallowed NOSes are rejected regardless of the caller's `platforms` claim.
-    derived = devices_in_topology(topology_yaml)
+    # Policy checks run on netlab's RESOLVED node devices, before any probe or deploy, so
+    # disallowed NOSes are rejected regardless of the caller's `platforms` claim — and we
+    # fail closed when devices can't be resolved (no metadata-absence loophole).
+    resolved = resolved_node_devices(topology_yaml)
+    if not resolved["ok"]:
+        return {"ok": False, "verdict": "invalid", "errors": resolved["errors"],
+                "reason": "topology devices could not be resolved; refusing to deploy",
+                "disclaimer": DISCLAIMER}
+    node_device = resolved["node_device"]
+    derived = set(node_device.values())
+    if not derived:
+        return {"ok": False, "verdict": "rejected",
+                "reason": "no devices resolved from topology; refusing to deploy",
+                "disclaimer": DISCLAIMER}
+
     allowed, rejected, reason = check_platforms(sorted(derived))
     if not allowed:
         return {"ok": False, "verdict": "rejected", "rejected": rejected, "reason": reason,
@@ -74,8 +86,8 @@ def validate_in_lab(
         return {
             "ok": False,
             "verdict": "mismatch",
-            "reason": f"platforms argument {sorted(declared)} does not match the devices in "
-                      f"the topology {sorted(derived)}; refusing to deploy.",
+            "reason": f"platforms argument {sorted(declared)} does not match the resolved "
+                      f"devices in the topology {sorted(derived)}; refusing to deploy.",
             "derived_devices": sorted(derived),
             "disclaimer": DISCLAIMER,
         }
@@ -91,10 +103,9 @@ def validate_in_lab(
                     "Offline tools (render_config, query_compatibility) work without it.",
         }
 
-    # Roles recorded from the parsed topology, not the caller's platforms arg.
-    nmap = node_device_map(topology_yaml)
-    dut = nmap.get("dut") or dut_platform or (sorted(derived)[0] if derived else "unknown")
-    peers = sorted({d for n, d in nmap.items() if n != "dut"}) or sorted(derived - {dut})
+    # Roles recorded from netlab's resolved node->device map, not the caller's platforms arg.
+    dut = node_device.get("dut") or dut_platform or (sorted(derived)[0] if derived else "unknown")
+    peers = sorted({d for n, d in node_device.items() if n != "dut"}) or sorted(derived - {dut})
     scenario = scenario or f"{module}-{dut}-lab"
     version = netlab_version()
 

@@ -2,8 +2,9 @@
 # Get it with: git clone --depth 1 https://github.com/ipspace/netlab netlab
 netlab/
 
-# local Claude Code MCP registration (machine-specific absolute paths)
+# local MCP/tool registrations (machine-specific absolute paths)
 .mcp.json
+opencode.json
 
 # venv / build
 .venv/

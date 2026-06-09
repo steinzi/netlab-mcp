@@ -20,6 +20,19 @@ nodes:
 links: [ dut-evil ]
 """
 
+# Forbidden device via netlab's dotted-key default (literal key "defaults.device") with NO
+# per-node device field — the bypass a literal `device:` scan misses.
+DEFAULT_FORBIDDEN = (
+    "provider: clab\nmodule: [bgp]\ndefaults.device: nxos\n"
+    "nodes: {a: {bgp.as: 65000}, b: {bgp.as: 65100}}\nlinks: [a-b]\n"
+)
+
+# No device anywhere — netlab cannot resolve one; policy must fail closed.
+NO_DEVICE = (
+    "provider: clab\nmodule: [bgp]\n"
+    "nodes: {a: {bgp.as: 65000}, b: {bgp.as: 65100}}\nlinks: [a-b]\n"
+)
+
 
 def test_render_produces_real_config_for_both_platforms():
     out = render.render_config(MVP)
@@ -131,14 +144,9 @@ def test_report_failure_is_negative_feedback():
     assert matrix.get_known_good("bgp", "vyos") is None
 
 
-def test_topo_extracts_every_device():
-    assert topo.devices_in_topology(MVP) == {"srlinux", "frr"}
-    assert topo.devices_in_topology(FORBIDDEN) == {"srlinux", "nxos"}
-
-
-def test_topo_node_device_map_resolves_roles():
-    m = topo.node_device_map(MVP)
-    assert m.get("dut") == "srlinux" and m.get("peer") == "frr"
+def test_topo_devices_in_doc_is_informational():
+    import yaml as _yaml
+    assert topo.devices_in_doc(_yaml.safe_load(MVP)) == {"srlinux", "frr"}
 
 
 def test_render_rejects_forbidden_device_embedded_in_yaml():
@@ -173,6 +181,35 @@ def test_validate_in_lab_rejects_platforms_topology_mismatch():
     )
     out = lab.validate_in_lab(only_srlinux, ["srlinux", "frr"], module="bgp")
     assert out["verdict"] == "mismatch", out
+
+
+# --- resolved-device enforcement (Codex round 2: default-device bypass) ---------
+def test_resolved_devices_catches_dotted_default():
+    res = transform.resolved_node_devices(DEFAULT_FORBIDDEN)
+    assert res["ok"], res["errors"]
+    assert set(res["node_device"].values()) == {"nxos"}  # resolved onto every node
+
+
+def test_resolved_devices_fail_closed_when_no_device():
+    res = transform.resolved_node_devices(NO_DEVICE)
+    assert not res["ok"]  # netlab can't resolve a device -> caller must reject
+
+
+def test_render_rejects_dotted_default_device():
+    out = render.render_config(DEFAULT_FORBIDDEN)
+    assert not out["ok"] and out["stage"] == "policy"
+    assert "nxos" in out["rejected"]
+
+
+def test_render_fails_closed_on_unresolvable_topology():
+    out = render.render_config(NO_DEVICE)
+    assert not out["ok"] and out["stage"] == "policy" and not out["per_node"]
+
+
+def test_validate_in_lab_rejects_dotted_default_without_platforms():
+    # no platforms arg => enforcement must come from the resolved topology, not metadata
+    out = lab.validate_in_lab(DEFAULT_FORBIDDEN, [], module="bgp")
+    assert out["verdict"] == "rejected" and "nxos" in out.get("rejected", [])
 
 
 def test_yaml_mirror_written():

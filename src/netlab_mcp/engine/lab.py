@@ -155,6 +155,18 @@ def validate_in_lab(
 
             val = run_netlab(["validate", "--dump", "result"], cwd=wd, timeout=timeout_s)
             verdict = VALIDATE_EXIT.get(val.returncode, "error")
+            # Guard against a false "pass". `netlab validate` exits 0 when every test was
+            # SKIPPED (e.g. the topology's validation plugin isn't implemented for the
+            # target device), so the exit code alone can over-report. netlab flags it in
+            # the output ("...the results are not reliable"); demote any pass/warning that
+            # ran zero real tests to "no_tests" so it never caches as known-good. Matters
+            # because validate_in_lab accepts arbitrary caller-supplied topologies.
+            out_lower = (val.stdout + val.stderr).lower()
+            if verdict in ("pass", "warning") and (
+                "the results are not reliable" in out_lower
+                or "tests passed: 0" in out_lower
+            ):
+                verdict = "no_tests"
             stages = {
                 "stage_create": "pass",
                 "stage_up": "pass",

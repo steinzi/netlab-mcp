@@ -55,11 +55,17 @@ async def main() -> int:
         assert e["ok"] and e["examples"], e
         print(f"   {len(e['examples'])} bgp example topologies indexed")
 
-        print("# 6. validate_in_lab (expected 'unavailable' without containerlab)")
+        # This is the lab tool; the offline smoke only asserts it returns a
+        # well-formed, structured verdict (+ disclaimer) rather than crashing.
+        # 'unavailable' on a box with no containerlab; 'deploy_failed' when
+        # containerlab is present but can't deploy (e.g. too old); 'pass'/
+        # 'warning' on a working lab host.
+        print("# 6. validate_in_lab (structured verdict; 'unavailable' without containerlab)")
         v = _data(await c.call_tool("validate_in_lab",
                                     {"topology_yaml": topo, "platforms": ["srlinux", "frr"]}))
         print(f"   verdict={v['verdict']} reasons={v.get('probe', {}).get('reasons')}")
-        assert v["verdict"] in ("unavailable", "pass", "warning"), v
+        assert v["verdict"] in ("unavailable", "deploy_failed", "pass", "warning"), v
+        assert v["disclaimer"], v
 
     print("\nOK: offline MCP loop verified.")
     return 0

@@ -11,6 +11,7 @@ from ..store import matrix
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
+from .topo import devices_in_topology, node_device_map
 
 
 def _record(
@@ -60,6 +61,25 @@ def validate_in_lab(
     timeout_s: int = 600,
 ) -> dict:
     """Deploy + validate a topology in containerlab and persist the verdict."""
+    # Policy checks run on the ACTUAL topology devices, before any capability probe or
+    # deploy, so disallowed NOSes are rejected regardless of the caller's `platforms` claim.
+    derived = devices_in_topology(topology_yaml)
+    allowed, rejected, reason = check_platforms(sorted(derived))
+    if not allowed:
+        return {"ok": False, "verdict": "rejected", "rejected": rejected, "reason": reason,
+                "derived_devices": sorted(derived), "disclaimer": DISCLAIMER}
+
+    declared = set(platforms or [])
+    if declared and declared != derived:
+        return {
+            "ok": False,
+            "verdict": "mismatch",
+            "reason": f"platforms argument {sorted(declared)} does not match the devices in "
+                      f"the topology {sorted(derived)}; refusing to deploy.",
+            "derived_devices": sorted(derived),
+            "disclaimer": DISCLAIMER,
+        }
+
     probe = lab_available()
     if not probe["ok"]:
         return {
@@ -71,13 +91,10 @@ def validate_in_lab(
                     "Offline tools (render_config, query_compatibility) work without it.",
         }
 
-    ok, rejected, reason = check_platforms(platforms)
-    if not ok:
-        return {"ok": False, "verdict": "rejected", "rejected": rejected, "reason": reason,
-                "disclaimer": DISCLAIMER}
-
-    dut = dut_platform or (platforms[0] if platforms else "unknown")
-    peers = [p for p in platforms if p != dut] or platforms
+    # Roles recorded from the parsed topology, not the caller's platforms arg.
+    nmap = node_device_map(topology_yaml)
+    dut = nmap.get("dut") or dut_platform or (sorted(derived)[0] if derived else "unknown")
+    peers = sorted({d for n, d in nmap.items() if n != "dut"}) or sorted(derived - {dut})
     scenario = scenario or f"{module}-{dut}-lab"
     version = netlab_version()
 

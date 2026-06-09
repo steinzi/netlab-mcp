@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..config import check_platforms
 from ..models import DISCLAIMER
 from .runner import RunResult, cleanup, new_workdir, run_netlab
+from .topo import devices_in_topology
 
 
 def _read(path: Path) -> str | None:
@@ -64,6 +66,20 @@ def render_config(
     If keep_dir is True the workdir is left on disk and its path is returned as `workdir`
     (used by the lab path and the known-good cache).
     """
+    # Enforce the platform allow-list on the devices the topology actually names —
+    # not on caller metadata — so a forbidden device can't be smuggled in via the YAML.
+    allowed, rejected, reason = check_platforms(sorted(devices_in_topology(topology_yaml)))
+    if not allowed:
+        return {
+            "ok": False,
+            "stage": "policy",
+            "errors": [reason],
+            "rejected": rejected,
+            "per_node": {},
+            "clab_yaml": None,
+            "disclaimer": DISCLAIMER,
+        }
+
     wd = new_workdir("nlmcp-render-")
     try:
         (wd / "topology.yml").write_text(topology_yaml)

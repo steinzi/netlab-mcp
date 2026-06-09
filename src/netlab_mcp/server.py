@@ -10,7 +10,7 @@ import yaml
 from fastmcp import FastMCP
 
 from .config import NETLAB_EXAMPLES, allowed_platforms, check_platforms
-from .engine import compat, lab, render, topogen, transform
+from .engine import compat, lab, render, topo, topogen, transform
 from .engine.probes import lab_available
 from .engine.runner import netlab_version
 from .models import DISCLAIMER
@@ -145,7 +145,7 @@ def list_examples(module: str | None = None) -> dict:
             doc = yaml.safe_load(f.read_text()) or {}
             mod = doc.get("module")
             info["modules"] = mod if isinstance(mod, list) else ([mod] if mod else [])
-            info["devices"] = sorted(_devices_in(doc))
+            info["devices"] = sorted(topo.devices_in_doc(doc))
             info["message"] = (doc.get("message") or "").strip().splitlines()[:1]
         except (yaml.YAMLError, OSError):
             pass
@@ -201,20 +201,7 @@ def validate_in_lab(
     )
 
 
-# --- helpers / entrypoint ------------------------------------------------------
-def _devices_in(doc: dict) -> set[str]:
-    devices: set[str] = set()
-    for n in (doc.get("nodes") or {}).values() if isinstance(doc.get("nodes"), dict) else []:
-        if isinstance(n, dict) and n.get("device"):
-            devices.add(n["device"])
-    for g in (doc.get("groups") or {}).values() if isinstance(doc.get("groups"), dict) else []:
-        if isinstance(g, dict) and g.get("device"):
-            devices.add(g["device"])
-    if doc.get("defaults", {}).get("device"):
-        devices.add(doc["defaults"]["device"])
-    return devices
-
-
+# --- entrypoint ----------------------------------------------------------------
 def main() -> None:
     matrix.init_db()
     mcp.run()

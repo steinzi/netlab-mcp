@@ -4,11 +4,21 @@ from pathlib import Path
 from conftest import FIXTURES
 
 from netlab_mcp.config import check_platforms
-from netlab_mcp.engine import compat, render, topogen, transform
+from netlab_mcp.engine import compat, lab, render, topo, topogen, transform
 from netlab_mcp.models import DISCLAIMER
 from netlab_mcp.store import matrix
 
 MVP = (FIXTURES / "mvp_bgp.yml").read_text()
+
+# A topology that smuggles a forbidden NOS (nxos) past caller metadata.
+FORBIDDEN = """\
+provider: clab
+module: [ bgp ]
+nodes:
+  dut: {device: srlinux, bgp.as: 65000}
+  evil: {device: nxos, bgp.as: 65100}
+links: [ dut-evil ]
+"""
 
 
 def test_render_produces_real_config_for_both_platforms():
@@ -85,6 +95,50 @@ def test_report_failure_is_negative_feedback():
     assert fails and fails[0]["notes"] == "did not converge"
     # a failing combo must NOT be served as known-good
     assert matrix.get_known_good("bgp", "vyos") is None
+
+
+def test_topo_extracts_every_device():
+    assert topo.devices_in_topology(MVP) == {"srlinux", "frr"}
+    assert topo.devices_in_topology(FORBIDDEN) == {"srlinux", "nxos"}
+
+
+def test_topo_node_device_map_resolves_roles():
+    m = topo.node_device_map(MVP)
+    assert m.get("dut") == "srlinux" and m.get("peer") == "frr"
+
+
+def test_render_rejects_forbidden_device_embedded_in_yaml():
+    out = render.render_config(FORBIDDEN)
+    assert not out["ok"] and out["stage"] == "policy"
+    assert "nxos" in out["rejected"]
+    assert not out["per_node"]  # nothing rendered
+
+
+def test_render_rejects_forbidden_device_hidden_in_group():
+    topo_yaml = (
+        "provider: clab\nmodule: [bgp]\n"
+        "groups:\n  bad: {device: nxos, members: [r1]}\n"
+        "nodes:\n  r1: {bgp.as: 65000}\n  r2: {device: srlinux, bgp.as: 65100}\n"
+        "links: [r1-r2]\n"
+    )
+    out = render.render_config(topo_yaml)
+    assert not out["ok"] and "nxos" in out["rejected"]
+
+
+def test_validate_in_lab_rejects_forbidden_device_before_probe():
+    # allow-list runs on derived topology devices, before the docker/containerlab probe
+    out = lab.validate_in_lab(FORBIDDEN, ["srlinux", "nxos"], module="bgp")
+    assert out["verdict"] == "rejected" and "nxos" in out["rejected"]
+
+
+def test_validate_in_lab_rejects_platforms_topology_mismatch():
+    only_srlinux = (
+        "provider: clab\nmodule: [bgp]\n"
+        "nodes:\n  dut: {device: srlinux, bgp.as: 65000}\n"
+        "  p: {device: srlinux, bgp.as: 65100}\nlinks: [dut-p]\n"
+    )
+    out = lab.validate_in_lab(only_srlinux, ["srlinux", "frr"], module="bgp")
+    assert out["verdict"] == "mismatch", out
 
 
 def test_yaml_mirror_written():

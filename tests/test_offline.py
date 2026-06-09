@@ -66,10 +66,44 @@ def test_allow_list_blocks_licensed_nos():
 
 
 def test_declared_support_lists_srlinux_bgp():
-    res = compat.declared_support(module="bgp", device="srlinux")
+    res = compat.declared_support(module="bgp", platforms=["srlinux"])
     assert res["ok"], res.get("error")
     assert "srlinux" in res["data"]
     assert "bgp" in res["data"]["srlinux"]
+
+
+def test_declared_support_multi_platform_filter():  # F1
+    res = compat.declared_support(module="bgp", platforms=["frr", "srlinux"])
+    assert res["ok"], res.get("error")
+    assert set(res["data"]) == {"frr", "srlinux"}  # filtered, not the full ~33-device dump
+
+
+def test_generate_topology_warns_on_unrecognized_intent():  # F2
+    gen = topogen.generate("xyzzy frobnicate the wibble", ["srlinux", "frr"])
+    assert gen["module"] == "bgp"
+    assert any("defaulted to 'bgp'" in w for w in gen["warnings"])
+    # a real keyword does NOT warn, and is echoed in notes
+    ok = topogen.generate("set up ospf", ["frr", "vyos"])
+    assert not any("defaulted" in w for w in ok["warnings"])
+    assert any("ospf" in n for n in ok["notes"])
+
+
+def test_validate_is_host_independent_for_vyos():  # F3
+    # vyos clab def bind-mounts /lib/modules (absent on macOS); topology is still sound.
+    gen = topogen.generate("ospf", ["frr", "vyos"])
+    res = transform.validate_topology(gen["topology_yaml"])
+    assert res["ok"], res["errors"]
+
+
+def test_validate_surfaces_specific_netlab_error():  # F3b
+    bad = (
+        "provider: clab\nmodule: [bgp]\n"
+        "nodes: {dut: {device: notarealnos, bgp.as: 65000}, "
+        "peer: {device: frr, bgp.as: 65100}}\nlinks: [dut-peer]\n"
+    )
+    res = transform.validate_topology(bad)
+    assert not res["ok"]
+    assert any("notarealnos" in e for e in res["errors"]), res["errors"]
 
 
 def test_matrix_roundtrip_and_known_good():

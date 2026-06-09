@@ -66,8 +66,7 @@ def query_compatibility(module: str | None = None, platforms: list[str] | None =
     `conflicts` flags cells declared-supported but observed-failing for the current version.
     """
     platforms = platforms or []
-    device = platforms[0] if len(platforms) == 1 else None
-    declared = compat.declared_support(module=module, device=device)
+    declared = compat.declared_support(module=module, platforms=platforms or None)
 
     observed = matrix.query(
         module=module,

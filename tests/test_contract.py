@@ -3,7 +3,6 @@
 These guard against upstream drift (flags / exit codes / output files moving). No docker.
 """
 from conftest import FIXTURES
-
 from netlab_mcp.engine.runner import cleanup, netlab_version, new_workdir, run_netlab
 
 MVP = (FIXTURES / "mvp_bgp.yml").read_text()

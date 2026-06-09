@@ -1,7 +1,7 @@
 """Live lab test — requires docker + containerlab. Skipped automatically when absent."""
 import pytest
-from conftest import FIXTURES
 
+from conftest import FIXTURES
 from netlab_mcp.engine import lab
 from netlab_mcp.engine.probes import lab_available
 from netlab_mcp.store import matrix

@@ -33,6 +33,15 @@ NO_DEVICE = (
     "nodes: {a: {bgp.as: 65000}, b: {bgp.as: 65100}}\nlinks: [a-b]\n"
 )
 
+# Allowed node devices, but smuggles an external Docker tool (edgeshark) via `tools:` —
+# a container-spawn vector the device allow-list alone does not cover.
+TOOLS_TOPO = (
+    "provider: clab\nmodule: [bgp]\n"
+    "tools:\n  edgeshark:\n"
+    "nodes:\n  dut: {device: srlinux, bgp.as: 65000}\n"
+    "  peer: {device: frr, bgp.as: 65100}\nlinks: [dut-peer]\n"
+)
+
 
 def test_render_produces_real_config_for_both_platforms():
     out = render.render_config(MVP)
@@ -210,6 +219,18 @@ def test_validate_in_lab_rejects_dotted_default_without_platforms():
     # no platforms arg => enforcement must come from the resolved topology, not metadata
     out = lab.validate_in_lab(DEFAULT_FORBIDDEN, [], module="bgp")
     assert out["verdict"] == "rejected" and "nxos" in out.get("rejected", [])
+
+
+# --- external-tools spawn vector (Codex round 3) -------------------------------
+def test_resolved_tools_detects_and_reports_none():
+    assert "edgeshark" in transform.resolved_tools(TOOLS_TOPO)["tools"]
+    none = transform.resolved_tools(MVP)
+    assert none["ok"] and none["tools"] == []
+
+
+def test_validate_in_lab_rejects_external_tools_before_deploy():
+    out = lab.validate_in_lab(TOOLS_TOPO, ["srlinux", "frr"], module="bgp")
+    assert out["verdict"] == "rejected" and "edgeshark" in out.get("tools", [])
 
 
 def test_yaml_mirror_written():

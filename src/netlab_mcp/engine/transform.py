@@ -82,3 +82,32 @@ def resolved_node_devices(topology_yaml: str, timeout: int = 120) -> dict:
         return {"ok": True, "node_device": node_device, "errors": []}
     finally:
         cleanup(wd)
+
+
+def resolved_tools(topology_yaml: str, timeout: int = 120) -> dict:
+    """Resolve the external tools netlab would start during `up` (edgeshark, nso, ...).
+
+    These run arbitrary Docker containers outside the NOS image set — some privileged or
+    host-integrated — so the lab path must police them, not just node devices.
+
+    Returns {ok, tools: [names], errors}. A topology with no `tools:` yields ok=True, tools=[]
+    (netlab raises "name 'tools' is not defined", which we treat as "none"). A genuine
+    transform error yields ok=False so callers can fail closed.
+    """
+    wd = new_workdir("nlmcp-tools-")
+    try:
+        (wd / "topology.yml").write_text(topology_yaml)
+        r = run_netlab(
+            ["inspect", "-t", "topology.yml", "tools", "--format", "json"],
+            cwd=wd,
+            timeout=timeout,
+        )
+        if r.ok:
+            data = _json_after_banner(r.stdout)
+            return {"ok": True, "tools": sorted(data.keys()) if isinstance(data, dict) else [],
+                    "errors": []}
+        if "'tools' is not defined" in (r.stdout + r.stderr):
+            return {"ok": True, "tools": [], "errors": []}
+        return {"ok": False, "tools": [], "errors": r.error_lines()}
+    finally:
+        cleanup(wd)

@@ -11,7 +11,7 @@ from ..store import matrix
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
-from .transform import resolved_node_devices
+from .transform import resolved_node_devices, resolved_tools
 
 
 def _record(
@@ -92,6 +92,21 @@ def validate_in_lab(
             "disclaimer": DISCLAIMER,
         }
 
+    # External tools (edgeshark, nso, ...) run arbitrary Docker containers outside the NOS
+    # allow-list during `netlab up`. Reject any topology that declares them — the device
+    # allow-list alone does not cover this spawn vector. `--no-tools` below is the backstop.
+    tools = resolved_tools(topology_yaml)
+    if tools["tools"]:
+        return {
+            "ok": False,
+            "verdict": "rejected",
+            "reason": "topology declares external tools that start unreviewed Docker "
+                      "containers outside the allowed image set; refusing to deploy. "
+                      "Remove the 'tools:' section.",
+            "tools": tools["tools"],
+            "disclaimer": DISCLAIMER,
+        }
+
     probe = lab_available()
     if not probe["ok"]:
         return {
@@ -114,7 +129,9 @@ def validate_in_lab(
         try:
             (wd / "topology.yml").write_text(topology_yaml)
 
-            up = run_netlab(["up"], cwd=wd, timeout=timeout_s)
+            # --no-tools: hard backstop so external tools never start even if detection above
+            # somehow misses one (defense in depth alongside the explicit reject).
+            up = run_netlab(["up", "--no-tools"], cwd=wd, timeout=timeout_s)
             if not up.ok:
                 stages = {"stage_create": "pass", "stage_up": "fail",
                           "stage_config": None, "stage_validate": None}

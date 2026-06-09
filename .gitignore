@@ -1,0 +1,27 @@
+# vendored upstream engine — its own git clone, 130M+. Cloned locally, not committed.
+# Get it with: git clone --depth 1 https://github.com/ipspace/netlab netlab
+netlab/
+
+# venv / build
+.venv/
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# MCP runtime working dirs + state
+.work/
+store/matrix.db
+store/artifacts/
+
+# netlab lab leftovers (if ever run at repo root)
+clab.yml
+clab_files/
+*.snapshot.pickle
+hosts.yml
+ansible.cfg
+group_vars/
+host_vars/
+node_files/
+netlab.lock

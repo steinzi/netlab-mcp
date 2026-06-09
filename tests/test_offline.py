@@ -1,0 +1,94 @@
+"""Offline suite — no docker required. Exercises the real netlab render + the store."""
+from pathlib import Path
+
+from conftest import FIXTURES
+
+from netlab_mcp.config import check_platforms
+from netlab_mcp.engine import compat, render, topogen, transform
+from netlab_mcp.models import DISCLAIMER
+from netlab_mcp.store import matrix
+
+MVP = (FIXTURES / "mvp_bgp.yml").read_text()
+
+
+def test_render_produces_real_config_for_both_platforms():
+    out = render.render_config(MVP)
+    assert out["ok"], out["errors"]
+    assert set(out["per_node"]) >= {"dut", "peer"}
+    # srlinux DUT: real BGP config with our AS.
+    dut_cfg = "\n".join(out["per_node"]["dut"].values())
+    assert "65000" in dut_cfg
+    # frr peer: vtysh BGP config referencing the remote AS.
+    peer_cfg = "\n".join(out["per_node"]["peer"].values())
+    assert "router bgp" in peer_cfg.lower()
+    # clab.yml carries the free images.
+    assert out["clab_yaml"] and "srlinux" in out["clab_yaml"]
+    assert out["disclaimer"] == DISCLAIMER
+
+
+def test_render_filters_to_requested_nodes():
+    out = render.render_config(MVP, nodes=["dut"])
+    assert set(out["per_node"]) == {"dut"}
+
+
+def test_generate_topology_is_parse_valid():
+    gen = topogen.generate("ebgp peering", ["srlinux", "frr"])
+    assert gen["module"] == "bgp"
+    assert transform.validate_topology(gen["topology_yaml"])["ok"]
+
+
+def test_transform_rejects_garbage():
+    bad = transform.validate_topology("this: [is, not, a, topology\n")
+    assert not bad["ok"]
+    assert bad["errors"]
+
+
+def test_detect_module_keywords():
+    assert topogen.detect_module("set up evpn vxlan") == "evpn"
+    assert topogen.detect_module("two ospf routers") == "ospf"
+    assert topogen.detect_module("just peer them") == "bgp"  # default
+
+
+def test_allow_list_blocks_licensed_nos():
+    ok, rejected, reason = check_platforms(["srlinux", "nxos"])
+    assert not ok and "nxos" in rejected
+    assert "srlinux" in check_platforms(["srlinux"])[2] or check_platforms(["srlinux"])[0]
+
+
+def test_declared_support_lists_srlinux_bgp():
+    res = compat.declared_support(module="bgp", device="srlinux")
+    assert res["ok"], res.get("error")
+    assert "srlinux" in res["data"]
+    assert "bgp" in res["data"]["srlinux"]
+
+
+def test_matrix_roundtrip_and_known_good():
+    matrix.upsert({
+        "module": "bgp", "scenario": "unit-pass", "dut_platform": "srlinux",
+        "peer_platforms": ["frr"], "netlab_version": "test-1",
+        "verdict": "pass", "stage_validate": "pass", "source": "lab",
+        "topology_ref": None, "config_ref": None,
+    })
+    rows = matrix.query(module="bgp", dut_platform="srlinux")
+    assert any(r["scenario"] == "unit-pass" and r["verdict"] == "pass" for r in rows)
+    good = matrix.get_known_good("bgp", "srlinux")
+    assert good and good["verdict"] == "pass"
+
+
+def test_report_failure_is_negative_feedback():
+    matrix.upsert({
+        "module": "bgp", "scenario": "reported-validate", "dut_platform": "vyos",
+        "netlab_version": "test-1", "verdict": "fail", "source": "report_failure",
+        "notes": "did not converge",
+    })
+    fails = matrix.query(module="bgp", dut_platform="vyos", verdicts=["fail"])
+    assert fails and fails[0]["notes"] == "did not converge"
+    # a failing combo must NOT be served as known-good
+    assert matrix.get_known_good("bgp", "vyos") is None
+
+
+def test_yaml_mirror_written():
+    matrix.upsert({"module": "ospf", "dut_platform": "frr", "netlab_version": "test-1",
+                   "verdict": "pass", "source": "lab"})
+    mirror = Path(matrix._YAML)
+    assert mirror.is_file() and "ospf" in mirror.read_text()

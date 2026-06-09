@@ -1,0 +1,22 @@
+---
+# MVP loop fixture: eBGP, srlinux DUT + frr peer, containerlab. Both free images.
+provider: clab
+module: [ bgp ]
+
+nodes:
+  dut:
+    device: srlinux
+    bgp.as: 65000
+  peer:
+    device: frr
+    bgp.as: 65100
+
+links:
+- dut-peer
+
+validate:
+  session:
+    description: eBGP session dut <-> peer
+    wait: 40
+    nodes: [ peer ]
+    plugin: bgp_neighbor(node.bgp.neighbors,'dut')

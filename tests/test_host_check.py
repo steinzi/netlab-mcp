@@ -38,3 +38,23 @@ def test_health_route_payload():
                 assert isinstance(body["lab_available"], bool)
                 assert body["netlab_version"]
     asyncio.run(go())
+
+
+def test_health_unhealthy_when_netlab_missing(monkeypatch):
+    def boom():
+        raise RuntimeError("netlab executable not found")
+    monkeypatch.setattr(s, "netlab_version", boom)
+
+    async def go():
+        import httpx
+
+        app = s.mcp.http_app()
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                r = await c.get("/health")
+                assert r.status_code == 200
+                body = r.json()
+                assert body["ok"] is False
+                assert body["netlab_version"] is None
+    asyncio.run(go())

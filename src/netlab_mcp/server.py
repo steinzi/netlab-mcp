@@ -282,10 +282,13 @@ async def health(request):  # noqa: ANN001 - starlette Request, kept import-ligh
     import anyio.to_thread
     from starlette.responses import JSONResponse
 
-    version = await anyio.to_thread.run_sync(netlab_version)
+    try:
+        version = await anyio.to_thread.run_sync(netlab_version)
+    except RuntimeError:  # netlab_bin() discovery failure — report unhealthy, not a 500
+        version = None
     probe = await anyio.to_thread.run_sync(probes.lab_available_cached)
     return JSONResponse({
-        "ok": True,
+        "ok": version is not None and version != "unknown",
         "netlab_version": version,
         "lab_available": probe["ok"],
     })

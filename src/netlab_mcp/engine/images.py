@@ -89,7 +89,8 @@ def device_image_map() -> dict[str, str]:
     """{device: 'repo:tag'} for every netlab device backed by a locally loaded image.
 
     Tag choice is deterministic: netlab's default tag when it is loaded, else the
-    highest version-sorted loaded tag (an explicit version beats 'latest').
+    highest version-sorted loaded tag (an explicit version beats 'latest'; equal
+    version keys tie-break on the tag string so set iteration order never decides).
     """
     local = installed_images()
     if not local:
@@ -113,7 +114,7 @@ def device_image_map() -> dict[str, str]:
             if default_image.rpartition(":")[0] == repo and default_tag in tags:
                 chosen[dev] = default_image
             else:
-                chosen[dev] = f"{repo}:{max(tags, key=_version_key)}"
+                chosen[dev] = f"{repo}:{max(tags, key=lambda t: (_version_key(t), t))}"
             break
     return chosen
 

@@ -110,3 +110,11 @@ def test_default_images_swallow_missing_netlab(monkeypatch):
         assert images.device_image_map() == {"nxos": "vrnetlab/cisco_n9kv:9.3.9"}
     finally:
         images._netlab_default_clab_images.cache_clear()
+
+
+def test_tag_tie_breaks_on_string_not_set_order(monkeypatch):
+    # "1.0" and "v1.0" produce identical numeric keys; the winner must not depend on
+    # set iteration order.
+    _local(monkeypatch, {"quay.io/frrouting/frr": {"1.0", "v1.0"}})
+    _defaults(monkeypatch, {"frr": "quay.io/frrouting/frr:9.9.9"})
+    assert images.device_image_map() == {"frr": "quay.io/frrouting/frr:v1.0"}

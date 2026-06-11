@@ -14,9 +14,10 @@ def test_host_check_shape():
             assert set(out) >= {"ok", "lab_available", "versions", "allowed_platforms",
                                 "installed_device_images", "validation_plugins"}
             assert out["versions"]["netlab"]
-            # capability map reflects the installed netlab (26.06 ground truth)
-            assert "frr" in out["validation_plugins"]["ospf"]
-            assert "srlinux" not in out["validation_plugins"]["ospf"]
+            # capability map mirrors the installed netlab, whatever its version
+            from netlab_mcp.engine import validation
+            for module in validation.MODULE_PLUGINS:
+                assert out["validation_plugins"][module] == validation.capable_devices(module)
             assert "frr" in out["allowed_platforms"]
     _run = asyncio.run(go())
 

@@ -154,3 +154,21 @@ def test_artifact_key_includes_scenario():
                      verdict="pass", stages={}, version="26.06",
                      topology_yaml="b", per_node={"dut": {}}, notes="")
     assert r1["topology_ref"] != r2["topology_ref"]
+
+
+def test_overlong_scenario_still_records():
+    # A caller-supplied scenario long enough to blow the filesystem name limit must not
+    # crash a successful run — the artifact dir name is bounded (and stays collision-safe).
+    from pathlib import Path
+    rec = lab._record(module="bgp", scenario="s" * 400, dut_platform="frr", peers=["frr"],
+                      verdict="pass", stages={}, version="26.06",
+                      topology_yaml="x", per_node={"dut": {}}, notes="")
+    assert rec["topology_ref"] and Path(rec["topology_ref"]).is_file()
+    assert len(Path(rec["topology_ref"]).parent.name) <= 200
+
+
+def test_slug_bounds_length_and_stays_unique():
+    a = matrix._slug("m-" + "z" * 400 + "-A")
+    b = matrix._slug("m-" + "z" * 400 + "-B")
+    assert len(a) <= 200 and len(b) <= 200
+    assert a != b  # distinct keys keep distinct slugs despite truncation

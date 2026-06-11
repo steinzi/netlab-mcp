@@ -1,6 +1,7 @@
 """Compatibility matrix: sqlite for queries + a committed YAML mirror for git-diff review."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -152,8 +153,19 @@ def get_known_good(module: str, platform: str, netlab_version: str | None = None
 
 
 # --- artifact cache (topology + rendered config for known-good replay) ----------
+_SLUG_MAX = 200  # keep the artifact dir well under the 255-byte filesystem component limit
+
+
 def _slug(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", s).strip("-") or "run"
+    # The key is built from caller-controlled, unbounded fields (module, scenario, ...), so
+    # bound the path component or an overlong value raises OSError(File name too long) when
+    # the dir is created — which would crash a successful validation before it records.
+    base = re.sub(r"[^a-zA-Z0-9_.-]+", "-", s).strip("-") or "run"
+    if len(base) <= _SLUG_MAX:
+        return base
+    # Truncate but stay collision-resistant: append a hash of the full original key.
+    digest = hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{base[:_SLUG_MAX - 13].rstrip('-')}-{digest}"
 
 
 def cache_artifacts(key: str, topology_yaml: str, per_node: dict) -> tuple[str, str]:

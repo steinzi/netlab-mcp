@@ -6,6 +6,9 @@ Lab tool (needs docker + containerlab): validate_in_lab.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import yaml
 from fastmcp import FastMCP
 
@@ -15,7 +18,25 @@ from .engine.runner import netlab_version
 from .models import DISCLAIMER
 from .store import matrix
 
-mcp = FastMCP("netlab-mcp")
+
+def _auth_from_env():
+    """Optional static bearer auth: NETLAB_MCP_TOKEN or NETLAB_MCP_TOKEN_FILE.
+
+    The file form keeps the secret out of `systemctl show`/process env dumps. No token
+    set -> no auth layer (stdio use, or an external gate like a reverse proxy).
+    """
+    token = (os.environ.get("NETLAB_MCP_TOKEN") or "").strip()
+    token_file = os.environ.get("NETLAB_MCP_TOKEN_FILE")
+    if not token and token_file:
+        token = Path(token_file).read_text().strip()
+    if not token:
+        return None
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    return StaticTokenVerifier(tokens={token: {"client_id": "netlab-mcp"}})
+
+
+mcp = FastMCP("netlab-mcp", auth=_auth_from_env())
 
 
 # --- offline tools -------------------------------------------------------------
@@ -255,8 +276,28 @@ async def health(request):  # noqa: ANN001 - starlette Request, kept import-ligh
 
 # --- entrypoint ----------------------------------------------------------------
 def main() -> None:
+    """Run over stdio (default) or streamable HTTP.
+
+    NETLAB_MCP_TRANSPORT=http serves /mcp on NETLAB_MCP_HOST:NETLAB_MCP_PORT
+    (default 127.0.0.1:8000). Combine with NETLAB_MCP_TOKEN[_FILE] for bearer auth —
+    mandatory if the host is anything other than loopback, since validate_in_lab reaches
+    docker/sudo on this machine.
+    """
     matrix.init_db()
-    mcp.run()
+    transport = (os.environ.get("NETLAB_MCP_TRANSPORT") or "stdio").strip().lower()
+    if transport in ("http", "streamable-http"):
+        host = os.environ.get("NETLAB_MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("NETLAB_MCP_PORT", "8000"))
+        if host not in ("127.0.0.1", "localhost", "::1") and mcp.auth is None:
+            raise SystemExit(
+                "refusing to bind HTTP on a non-loopback host without auth; "
+                "set NETLAB_MCP_TOKEN or NETLAB_MCP_TOKEN_FILE (or bind to 127.0.0.1)."
+            )
+        mcp.run(transport="http", host=host, port=port)
+    elif transport == "stdio":
+        mcp.run()
+    else:
+        raise SystemExit(f"unknown NETLAB_MCP_TRANSPORT '{transport}' (use stdio or http)")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -196,8 +197,14 @@ def dump_yaml() -> None:
     records = [_decode(r) for r in rows]
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     # Atomic write: every upsert rewrites this whole file, and concurrent writers (service +
-    # CLI sweep) would otherwise interleave into a torn mirror. Write a temp then rename.
+    # CLI sweep, or two threads of one server) would otherwise interleave into a torn mirror.
+    # mkstemp gives each writer a unique temp in the same dir; the rename is atomic.
     text = yaml.safe_dump(records, sort_keys=False, default_flow_style=False, width=100)
-    tmp = _YAML.with_name(f"{_YAML.name}.{os.getpid()}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, _YAML)
+    fd, tmp = tempfile.mkstemp(dir=str(STORE_DIR), prefix=".matrix.", suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, _YAML)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

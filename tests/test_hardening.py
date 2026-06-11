@@ -39,6 +39,21 @@ def test_timeout_kills_grandchildren(tmp_path, monkeypatch):
         runner.netlab_bin.cache_clear()
 
 
+# --- runner: child still dies if the group signal is denied (no hang) ------------
+def test_terminate_group_kills_child_when_killpg_denied(monkeypatch):
+    import subprocess as sp
+
+    proc = sp.Popen(["sleep", "30"], start_new_session=True)
+
+    def deny(*a):
+        raise PermissionError("not permitted")
+    monkeypatch.setattr(runner.os, "killpg", deny)
+    runner._terminate_group(proc)
+    # The direct child must be reaped despite killpg being denied, so a follow-up
+    # communicate() can't hang on a still-running process.
+    assert proc.wait(timeout=5) is not None
+
+
 # --- runner: color forced off so JSON/marker parsing survives FORCE_COLOR --------
 def test_color_forced_off(tmp_path, monkeypatch):
     fake = _fake_netlab(tmp_path, 'echo "NO_COLOR=$NO_COLOR FORCE_COLOR=${FORCE_COLOR:-unset}"\n')
@@ -126,7 +141,7 @@ def test_dump_yaml_atomic_no_tmp_left():
     matrix.upsert({"module": "t", "scenario": "s", "dut_platform": "frr",
                    "peer_platforms": ["frr"], "netlab_version": "x",
                    "verdict": "fail", "source": "test"})
-    assert not list(STORE_DIR.glob("matrix.yaml.*tmp"))
+    assert not list(STORE_DIR.glob("*.tmp"))
     assert (STORE_DIR / "matrix.yaml").is_file()
 
 

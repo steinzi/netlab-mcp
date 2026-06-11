@@ -80,7 +80,10 @@ def _terminate_group(proc: subprocess.Popen) -> None:
     own session (`start_new_session=True`) so its pid is a process-group leader; signalling
     the negative pgid reaches the whole tree. Best-effort: root-owned (sudo containerlab)
     members may reject the signal (EPERM) — the `finally` `netlab down` is the backstop for
-    those, while the toor-owned ansible/netlab grandchildren this is aimed at do die here.
+    those, while the unprivileged ansible/netlab grandchildren this is aimed at do die here.
+
+    Always ensures the direct child itself is killed, even if the group signal is denied, so
+    the caller's follow-up `communicate()` can drain the pipes.
     """
     try:
         pgid = os.getpgid(proc.pid)
@@ -91,12 +94,14 @@ def _terminate_group(proc: subprocess.Popen) -> None:
         try:
             os.killpg(pgid, sig)
         except (ProcessLookupError, PermissionError, OSError):
-            break
+            proc.kill()  # group signal denied/gone — make sure the child itself dies
+            return
         try:
             proc.wait(timeout=10)
             return
         except subprocess.TimeoutExpired:
             continue
+    proc.kill()  # group got SIGKILL but the leader still hasn't reaped — force the child
 
 
 def run_netlab(
@@ -139,7 +144,14 @@ def run_netlab(
         return RunResult(cmd, proc.returncode, stdout, stderr)
     except subprocess.TimeoutExpired:
         _terminate_group(proc)
-        stdout, stderr = proc.communicate()
+        # Drain with a bound: a surviving (root-owned) grandchild can hold the inherited
+        # stdout pipe open, so an unbounded communicate() could block even though the child
+        # is dead. Cap it and give up the output rather than hanging the caller.
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = "", ""
         return RunResult(cmd, TIMEOUT_RC, stdout or "",
                          (stderr or "") + f"\n[timeout after {timeout}s]")
 

@@ -229,6 +229,10 @@ def host_check() -> dict:
     except RuntimeError as e:  # doctor must diagnose a netlab-less host, not crash on it
         nl_version = None
         probe = {**probe, "ok": False, "reasons": [*probe["reasons"], str(e)]}
+    if nl_version == "unknown":  # binary resolved but does not run (bad NETLAB_MCP_NETLAB_BIN?)
+        probe = {**probe, "ok": False,
+                 "reasons": [*probe["reasons"], "netlab executable does not run or reports "
+                                                "no version; check NETLAB_MCP_NETLAB_BIN"]}
     return {
         "ok": probe["ok"],
         "lab_available": probe,

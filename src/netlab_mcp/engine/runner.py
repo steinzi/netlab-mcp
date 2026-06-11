@@ -97,6 +97,11 @@ def run_netlab(
         stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
         stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
         return RunResult(cmd, TIMEOUT_RC, stdout, stderr + f"\n[timeout after {timeout}s]")
+    except OSError as e:
+        # e.g. NETLAB_MCP_NETLAB_BIN pointing at a missing/non-executable path. Keep the
+        # "never raises" contract so callers (host_check above all) degrade to error
+        # handling instead of crashing the tool call.
+        return RunResult(cmd, 127, "", f"error: cannot execute {cmd[0]!r}: {e}")
 
 
 @lru_cache(maxsize=1)

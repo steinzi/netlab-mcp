@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import yaml
 
-from . import validation
+from . import images, validation
 
 # Modules we can scaffold a sensible starter lab for. Order matters for keyword detection
 # (check more specific tokens first).
@@ -110,6 +110,24 @@ def generate(intent: str, platforms: list[str] | None) -> dict:
             "suggestion": "add a validate: block by hand; see netlab's integration tests "
                           "(list_examples) for working test stanzas.",
         }
+
+    # Pin each device to an image that is actually loaded on this host. vrnetlab-built and
+    # licensed images exist only locally — netlab's default tag would make `netlab up` try
+    # (and fail) to pull. Topology-level defaults keep the YAML small and easy to override.
+    pinned = {}
+    image_map = images.device_image_map()
+    for dev in sorted(set(node_device.values())):
+        if dev in image_map:
+            pinned[dev] = image_map[dev]
+    if pinned:
+        topo["defaults"] = {
+            "devices": {dev: {"clab": {"image": img}} for dev, img in pinned.items()}
+        }
+        notes.append(
+            "Pinned to locally loaded images: "
+            + ", ".join(f"{d} -> {i}" for d, i in pinned.items())
+            + ". Override defaults.devices.<device>.clab.image to use a different tag."
+        )
 
     return {
         "module": module,

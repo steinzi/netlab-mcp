@@ -1,9 +1,12 @@
 """Compatibility matrix: sqlite for queries + a committed YAML mirror for git-diff review."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,8 +34,13 @@ def _now() -> str:
 
 def _connect() -> sqlite3.Connection:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB))
+    conn = sqlite3.connect(str(_DB), timeout=30)
     conn.row_factory = sqlite3.Row
+    # WAL lets the MCP service read while a CLI sweep writes (and vice versa) instead of
+    # the default rollback journal's whole-file lock; busy_timeout makes a contended writer
+    # wait rather than immediately raising OperationalError up into a tool error.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(_SCHEMA.read_text())
     return conn
 
@@ -145,8 +153,19 @@ def get_known_good(module: str, platform: str, netlab_version: str | None = None
 
 
 # --- artifact cache (topology + rendered config for known-good replay) ----------
+_SLUG_MAX = 200  # keep the artifact dir well under the 255-byte filesystem component limit
+
+
 def _slug(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", s).strip("-") or "run"
+    # The key is built from caller-controlled, unbounded fields (module, scenario, ...), so
+    # bound the path component or an overlong value raises OSError(File name too long) when
+    # the dir is created — which would crash a successful validation before it records.
+    base = re.sub(r"[^a-zA-Z0-9_.-]+", "-", s).strip("-") or "run"
+    if len(base) <= _SLUG_MAX:
+        return base
+    # Truncate but stay collision-resistant: append a hash of the full original key.
+    digest = hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{base[:_SLUG_MAX - 13].rstrip('-')}-{digest}"
 
 
 def cache_artifacts(key: str, topology_yaml: str, per_node: dict) -> tuple[str, str]:
@@ -189,6 +208,15 @@ def dump_yaml() -> None:
         conn.close()
     records = [_decode(r) for r in rows]
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-    _YAML.write_text(
-        yaml.safe_dump(records, sort_keys=False, default_flow_style=False, width=100)
-    )
+    # Atomic write: every upsert rewrites this whole file, and concurrent writers (service +
+    # CLI sweep, or two threads of one server) would otherwise interleave into a torn mirror.
+    # mkstemp gives each writer a unique temp in the same dir; the rename is atomic.
+    text = yaml.safe_dump(records, sort_keys=False, default_flow_style=False, width=100)
+    fd, tmp = tempfile.mkstemp(dir=str(STORE_DIR), prefix=".matrix.", suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, _YAML)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

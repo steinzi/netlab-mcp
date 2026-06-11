@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -70,6 +71,39 @@ def cleanup(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def _terminate_group(proc: subprocess.Popen) -> None:
+    """Kill the subprocess and every grandchild it spawned (ansible, containerlab, docker).
+
+    `subprocess`'s own timeout only kills the direct child, orphaning netlab's long-running
+    grandchildren — they keep spinning against a half-built lab (observed: stuck
+    `netlab initial`/`ansible-playbook` after a deploy timeout). The child is started in its
+    own session (`start_new_session=True`) so its pid is a process-group leader; signalling
+    the negative pgid reaches the whole tree. Best-effort: root-owned (sudo containerlab)
+    members may reject the signal (EPERM) — the `finally` `netlab down` is the backstop for
+    those, while the unprivileged ansible/netlab grandchildren this is aimed at do die here.
+
+    Always ensures the direct child itself is killed, even if the group signal is denied, so
+    the caller's follow-up `communicate()` can drain the pipes.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        proc.kill()
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()  # group signal denied/gone — make sure the child itself dies
+            return
+        try:
+            proc.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    proc.kill()  # group got SIGKILL but the leader still hasn't reaped — force the child
+
+
 def run_netlab(
     args: list[str],
     cwd: Path,
@@ -79,29 +113,47 @@ def run_netlab(
     """Invoke `netlab <args>` in `cwd`, capturing output. Never raises on timeout/error."""
     cmd = [netlab_bin(), *args]
     env = os.environ.copy()
-    # Keep netlab non-interactive and deterministic.
+    # We parse netlab stdout (inspect JSON, version line, validate markers); ANSI color
+    # codes from rich corrupt that. ANSIBLE_FORCE_COLOR covers the embedded ansible runs;
+    # NO_COLOR + dropping any inherited FORCE_COLOR covers netlab's own rich output, which
+    # otherwise colorizes even when piped (e.g. when FORCE_COLOR is set in the environment).
     env.setdefault("ANSIBLE_FORCE_COLOR", "false")
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
     if env_extra:
         env.update(env_extra)
     try:
-        p = subprocess.run(
+        # start_new_session: own process group, so a timeout can kill the whole subtree
+        # (netlab -> ansible/containerlab/docker), not just the direct child.
+        proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=env,
+            start_new_session=True,
         )
-        return RunResult(cmd, p.returncode, p.stdout, p.stderr)
-    except subprocess.TimeoutExpired as e:
-        stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-        return RunResult(cmd, TIMEOUT_RC, stdout, stderr + f"\n[timeout after {timeout}s]")
     except OSError as e:
         # e.g. NETLAB_MCP_NETLAB_BIN pointing at a missing/non-executable path. Keep the
         # "never raises" contract so callers (host_check above all) degrade to error
         # handling instead of crashing the tool call.
         return RunResult(cmd, 127, "", f"error: cannot execute {cmd[0]!r}: {e}")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return RunResult(cmd, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        _terminate_group(proc)
+        # Drain with a bound: a surviving (root-owned) grandchild can hold the inherited
+        # stdout pipe open, so an unbounded communicate() could block even though the child
+        # is dead. Cap it and give up the output rather than hanging the caller.
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = "", ""
+        return RunResult(cmd, TIMEOUT_RC, stdout or "",
+                         (stderr or "") + f"\n[timeout after {timeout}s]")
 
 
 @lru_cache(maxsize=1)

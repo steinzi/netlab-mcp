@@ -173,7 +173,13 @@ def list_examples(module: str | None = None) -> dict:
         )
         return {"ok": True, "modules": modules}
 
+    # `module` is caller-controlled; refuse anything that escapes the examples tree
+    # (e.g. "../../etc") before globbing files out of it.
     mod_dir = base / module
+    try:
+        mod_dir.resolve().relative_to(base.resolve())
+    except ValueError:
+        return {"ok": False, "error": f"invalid module name '{module}'"}
     if not mod_dir.is_dir():
         return {"ok": False, "error": f"no examples for module '{module}'"}
 

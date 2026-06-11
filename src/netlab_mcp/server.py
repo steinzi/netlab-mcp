@@ -10,7 +10,7 @@ import yaml
 from fastmcp import FastMCP
 
 from .config import NETLAB_EXAMPLES, allowed_platforms, check_platforms
-from .engine import compat, lab, render, topo, topogen, transform, validation
+from .engine import compat, images, lab, probes, render, topo, topogen, transform, validation
 from .engine.runner import netlab_version
 from .models import DISCLAIMER
 from .store import matrix
@@ -190,6 +190,29 @@ def report_failure(
     return {"recorded": True, "module": module, "dut_platform": dut, "stage": stage}
 
 
+@mcp.tool
+def host_check() -> dict:
+    """Diagnose this host's lab readiness in one call — run this first when anything fails.
+
+    Reports docker/containerlab availability + versions, the netlab version, which
+    platforms are allowed, which devices have locally loaded images (deployable without a
+    pull), and which devices can anchor validate tests per module.
+    """
+    probe = probes.lab_available()
+    image_map = images.device_image_map()
+    return {
+        "ok": probe["ok"],
+        "lab_available": probe,
+        "versions": {"netlab": netlab_version(), **probes.tool_versions()},
+        "allowed_platforms": sorted(allowed_platforms()),
+        "installed_device_images": image_map,
+        "validation_plugins": {
+            module: validation.capable_devices(module)
+            for module in sorted(validation.MODULE_PLUGINS)
+        },
+    }
+
+
 # --- lab tool ------------------------------------------------------------------
 @mcp.tool
 def validate_in_lab(
@@ -211,6 +234,23 @@ def validate_in_lab(
         topology_yaml, platforms, module=module, scenario=scenario,
         keep_lab=keep_lab, timeout_s=timeout_s,
     )
+
+
+# --- health (HTTP transport only) -----------------------------------------------
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):  # noqa: ANN001 - starlette Request, kept import-light
+    """Unauthenticated liveness probe for funnels/uptime checks.
+
+    Deliberately cheap and non-sensitive: no image list, no paths, and the docker probe
+    is cached (~30s) so polling can't fork subprocesses per hit.
+    """
+    from starlette.responses import JSONResponse
+
+    return JSONResponse({
+        "ok": True,
+        "netlab_version": netlab_version(),
+        "lab_available": probes.lab_available_cached()["ok"],
+    })
 
 
 # --- entrypoint ----------------------------------------------------------------

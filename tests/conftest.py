@@ -17,6 +17,16 @@ os.environ.setdefault("NETLAB_MCP_WORKDIR", str(_TMP / "work"))
 
 FIXTURES = ROOT / "tests" / "fixtures"
 
+
+def tool_data(r):
+    """Unwrap a FastMCP client call_tool result to its structured payload."""
+    for attr in ("data", "structured_content"):
+        v = getattr(r, attr, None)
+        if v is not None:
+            return v
+    return r
+
+
 import pytest  # noqa: E402
 
 

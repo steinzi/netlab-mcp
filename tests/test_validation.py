@@ -82,3 +82,14 @@ def test_explain_no_tests_wrong_anchor():
     out = _explain_no_tests(topo, "ospf", {"dut": "srlinux", "peer": "frr"}, msg)
     assert "skipped" in out["reason"]
     assert "peer" in out["suggestion"]
+
+
+def test_pull_failure_hint_names_local_images(monkeypatch):
+    from netlab_mcp.engine import images, lab
+
+    monkeypatch.setattr(images, "device_image_map",
+                        lambda: {"nxos": "vrnetlab/cisco_n9kv:9.3.9"})
+    hint = lab._pull_failure_hint(
+        ["Error: failed to pull vrnetlab/vr-n9kv:9.3.8: not found"], {"nxos", "frr"})
+    assert hint and "vrnetlab/cisco_n9kv:9.3.9" in hint
+    assert lab._pull_failure_hint(["some ansible failure"], {"nxos"}) is None

@@ -4,14 +4,7 @@ import asyncio
 from fastmcp import Client
 
 import netlab_mcp.server as s
-
-
-def _data(r):
-    for attr in ("data", "structured_content"):
-        v = getattr(r, attr, None)
-        if v is not None:
-            return v
-    return r
+from conftest import tool_data as _data
 
 
 def test_host_check_shape():

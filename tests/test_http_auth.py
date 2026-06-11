@@ -74,3 +74,17 @@ def test_main_rejects_unknown_transport(monkeypatch):
     monkeypatch.setenv("NETLAB_MCP_TRANSPORT", "carrier-pigeon")
     with pytest.raises(SystemExit, match="carrier-pigeon"):
         s.main()
+
+
+def test_auth_from_env_bad_token_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("NETLAB_MCP_TOKEN", raising=False)
+    monkeypatch.setenv("NETLAB_MCP_TOKEN_FILE", str(tmp_path / "missing"))
+    with pytest.raises(SystemExit, match="cannot read NETLAB_MCP_TOKEN_FILE"):
+        s._auth_from_env()
+
+
+def test_main_rejects_non_numeric_port(monkeypatch):
+    monkeypatch.setenv("NETLAB_MCP_TRANSPORT", "http")
+    monkeypatch.setenv("NETLAB_MCP_PORT", "http")
+    with pytest.raises(SystemExit, match="must be a number"):
+        s.main()

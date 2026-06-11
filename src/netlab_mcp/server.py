@@ -28,7 +28,10 @@ def _auth_from_env():
     token = (os.environ.get("NETLAB_MCP_TOKEN") or "").strip()
     token_file = os.environ.get("NETLAB_MCP_TOKEN_FILE")
     if not token and token_file:
-        token = Path(token_file).read_text().strip()
+        try:
+            token = Path(token_file).read_text().strip()
+        except OSError as e:
+            raise SystemExit(f"cannot read NETLAB_MCP_TOKEN_FILE {token_file!r}: {e}") from e
     if not token:
         return None
     from fastmcp.server.auth import StaticTokenVerifier
@@ -221,10 +224,15 @@ def host_check() -> dict:
     """
     probe = probes.lab_available()
     image_map = images.device_image_map()
+    try:
+        nl_version = netlab_version()
+    except RuntimeError as e:  # doctor must diagnose a netlab-less host, not crash on it
+        nl_version = None
+        probe = {**probe, "ok": False, "reasons": [*probe["reasons"], str(e)]}
     return {
         "ok": probe["ok"],
         "lab_available": probe,
-        "versions": {"netlab": netlab_version(), **probes.tool_versions()},
+        "versions": {"netlab": nl_version, **probes.tool_versions()},
         "allowed_platforms": sorted(allowed_platforms()),
         "installed_device_images": image_map,
         "validation_plugins": {
@@ -263,14 +271,19 @@ async def health(request):  # noqa: ANN001 - starlette Request, kept import-ligh
     """Unauthenticated liveness probe for funnels/uptime checks.
 
     Deliberately cheap and non-sensitive: no image list, no paths, and the docker probe
-    is cached (~30s) so polling can't fork subprocesses per hit.
+    is cached (~30s) so polling can't fork subprocesses per hit. The probe and the
+    first-call netlab version both shell out, so they run in a worker thread — blocking
+    the event loop here would stall every other request, /mcp included.
     """
+    import anyio.to_thread
     from starlette.responses import JSONResponse
 
+    version = await anyio.to_thread.run_sync(netlab_version)
+    probe = await anyio.to_thread.run_sync(probes.lab_available_cached)
     return JSONResponse({
         "ok": True,
-        "netlab_version": netlab_version(),
-        "lab_available": probes.lab_available_cached()["ok"],
+        "netlab_version": version,
+        "lab_available": probe["ok"],
     })
 
 
@@ -287,7 +300,11 @@ def main() -> None:
     transport = (os.environ.get("NETLAB_MCP_TRANSPORT") or "stdio").strip().lower()
     if transport in ("http", "streamable-http"):
         host = os.environ.get("NETLAB_MCP_HOST", "127.0.0.1")
-        port = int(os.environ.get("NETLAB_MCP_PORT", "8000"))
+        port_raw = os.environ.get("NETLAB_MCP_PORT", "8000")
+        try:
+            port = int(port_raw)
+        except ValueError:
+            raise SystemExit(f"NETLAB_MCP_PORT must be a number, got {port_raw!r}") from None
         if host not in ("127.0.0.1", "localhost", "::1") and mcp.auth is None:
             raise SystemExit(
                 "refusing to bind HTTP on a non-loopback host without auth; "

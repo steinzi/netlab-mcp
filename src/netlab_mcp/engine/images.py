@@ -8,13 +8,12 @@ and topology generator can work with the host's library instead of netlab's defa
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import time
 from functools import lru_cache
 
 import yaml
 
+from .probes import _cmd_output
 from .runner import cleanup, new_workdir, run_netlab
 
 # Modern hellt/vrnetlab builds use names netlab's image table doesn't know about yet.
@@ -37,26 +36,23 @@ def installed_images(refresh: bool = False) -> dict[str, set[str]]:
         return _images_cache[1]
 
     repos: dict[str, set[str]] = {}
-    if shutil.which("docker"):
-        try:
-            p = subprocess.run(
-                ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if p.returncode == 0:
-                for line in p.stdout.splitlines():
-                    repo, _, tag = line.strip().rpartition(":")
-                    if repo and tag and tag != "<none>":
-                        repos.setdefault(repo, set()).add(tag)
-        except (subprocess.SubprocessError, OSError):
-            pass
+    out = _cmd_output(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=15)
+    for line in (out or "").splitlines():
+        repo, _, tag = line.strip().rpartition(":")
+        if repo and tag and tag != "<none>":
+            repos.setdefault(repo, set()).add(tag)
     _images_cache = (now, repos)
     return repos
 
 
 @lru_cache(maxsize=1)
 def _netlab_default_clab_images() -> dict[str, str]:
-    """{device: 'repo:tag'} clab defaults from `netlab show images`. {} on failure."""
+    """{device: 'repo:tag'} clab defaults from `netlab show images`. {} on ANY failure.
+
+    Must never raise: it sits under generate_topology, check_platforms (with
+    NETLAB_MCP_ALLOW_INSTALLED) and host_check — the doctor tool especially has to keep
+    working on a host where the netlab binary is missing (RuntimeError from netlab_bin()).
+    """
     wd = new_workdir("nlmcp-img-")
     try:
         r = run_netlab(["show", "images", "--format", "yaml"], cwd=wd, timeout=60)
@@ -68,7 +64,7 @@ def _netlab_default_clab_images() -> dict[str, str]:
             for dev, spec in data.items()
             if isinstance(spec, dict) and isinstance(spec.get("clab"), str)
         }
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RuntimeError):
         return {}
     finally:
         cleanup(wd)

@@ -94,3 +94,19 @@ def test_topogen_no_pin_without_images(monkeypatch):
     monkeypatch.setattr(images, "device_image_map", lambda: {})
     topo = yaml.safe_load(topogen.generate("ospf", ["srlinux", "frr"])["topology_yaml"])
     assert "defaults" not in topo
+
+
+def test_default_images_swallow_missing_netlab(monkeypatch):
+    # The doctor path must survive a host where the netlab binary cannot resolve.
+
+    def boom(*a, **k):
+        raise RuntimeError("netlab executable not found")
+    monkeypatch.setattr(images, "run_netlab", boom)
+    images._netlab_default_clab_images.cache_clear()
+    try:
+        assert images._netlab_default_clab_images() == {}
+        # extra-repo aliases still resolve from docker alone
+        _local(monkeypatch, {"vrnetlab/cisco_n9kv": {"9.3.9"}})
+        assert images.device_image_map() == {"nxos": "vrnetlab/cisco_n9kv:9.3.9"}
+    finally:
+        images._netlab_default_clab_images.cache_clear()

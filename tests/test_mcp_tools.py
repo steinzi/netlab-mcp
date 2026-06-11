@@ -9,15 +9,8 @@ import pytest
 from fastmcp import Client
 
 import netlab_mcp.server as s
+from conftest import tool_data as _data  # noqa: E402
 from netlab_mcp.store import matrix
-
-
-def _data(r):
-    for attr in ("data", "structured_content"):
-        v = getattr(r, attr, None)
-        if v is not None:
-            return v
-    return r
 
 
 def _run(go):

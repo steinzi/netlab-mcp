@@ -8,7 +8,7 @@ from __future__ import annotations
 from ..config import check_platforms
 from ..models import DISCLAIMER, GOOD_VERDICTS, VALIDATE_EXIT
 from ..store import matrix
-from . import validation
+from . import images, validation
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
@@ -49,6 +49,28 @@ def _explain_no_tests(
         "reason": "netlab ran zero real tests (skipped or unreliable results)",
         "suggestion": f"check raw_validate_output; {anchor_hint}",
     }
+
+
+def _pull_failure_hint(errors: list[str], devices: set[str]) -> str | None:
+    """When a deploy died fetching an image, point at locally loaded alternatives.
+
+    generate_topology pins images, but caller-supplied / list_examples topologies are
+    deliberately not mutated — so on hosts whose local-only (vrnetlab-built) tags differ
+    from netlab's defaults, `netlab up` hits an unpullable image and the error reads like
+    a broken host. Name the fix instead of leaving the caller to guess.
+    """
+    err_text = " ".join(errors).lower()
+    if not any(m in err_text for m in ("pull", "not found", "manifest unknown", "no such image")):
+        return None
+    local = {d: img for d, img in images.device_image_map().items() if d in devices}
+    if not local:
+        return None
+    return (
+        "the deploy seems to have failed fetching a container image; these devices have "
+        "locally loaded images — pin them in the topology via "
+        "defaults.devices.<device>.clab.image: "
+        + ", ".join(f"{d} -> {img}" for d, img in sorted(local.items()))
+    )
 
 
 def _record(
@@ -176,7 +198,7 @@ def validate_in_lab(
                         verdict="deploy_failed", stages=stages, version=version,
                         topology_yaml=topology_yaml, per_node={},
                         notes="; ".join(up.error_lines())[:500])
-                return {
+                result = {
                     "ok": False,
                     "verdict": "deploy_failed",
                     "stage": "up",
@@ -185,6 +207,10 @@ def validate_in_lab(
                     "harvested": True,
                     "disclaimer": DISCLAIMER,
                 }
+                hint = _pull_failure_hint(up.error_lines(), derived)
+                if hint:
+                    result["suggestion"] = hint
+                return result
 
             # Render config text for the response (offline, from the snapshot up just built).
             ri = run_netlab(["initial", "-o", "configs"], cwd=wd, timeout=180)

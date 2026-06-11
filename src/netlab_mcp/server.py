@@ -10,7 +10,7 @@ import yaml
 from fastmcp import FastMCP
 
 from .config import NETLAB_EXAMPLES, allowed_platforms, check_platforms
-from .engine import compat, lab, render, topo, topogen, transform
+from .engine import compat, lab, render, topo, topogen, transform, validation
 from .engine.runner import netlab_version
 from .models import DISCLAIMER
 from .store import matrix
@@ -44,6 +44,7 @@ def generate_topology(intent: str, platforms: list[str] | None = None) -> dict:
         "validation_errors": check["errors"],
         "notes": gen["notes"],
         "warnings": gen["warnings"],
+        "validation": gen["validation"],
     }
 
 
@@ -85,11 +86,24 @@ def query_compatibility(module: str | None = None, platforms: list[str] | None =
                     f"'{row['verdict']}' (scenario {row['scenario']}, netlab {version})"
                 )
 
+    # Declared support says a platform RUNS a module; it says nothing about whether the
+    # platform can ASSERT it in `netlab validate`. Surface that separately so callers see
+    # "srlinux runs ospf but can't auto-verify it" before deploying.
+    if module:
+        can_assert = {p: validation.device_can_assert(p, module) for p in platforms}
+    else:
+        can_assert = {p: validation.assertable_modules(p) for p in platforms}
+
     return {
         "ok": declared.get("ok", False),
         "netlab_version": version,
         "declared": decl_data,
         "declared_error": declared.get("error"),
+        "validation": {
+            "can_assert": can_assert,
+            "note": "true = device ships a netlab validation plugin for the module; "
+                    "anchor generated validate tests on a capable device.",
+        },
         "observed": observed,
         "conflicts": conflicts,
     }

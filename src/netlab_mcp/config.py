@@ -47,11 +47,25 @@ def netlab_bin() -> str:
 
 
 def allowed_platforms() -> set[str]:
-    """Free platforms plus any EULA platforms the user has explicitly accepted."""
+    """Free platforms, plus operator-granted extras.
+
+    Three opt-in ways to widen the gate beyond the free set, all explicit operator
+    decisions (the operator owns the images and their licenses, not the MCP caller):
+    - per-platform EULA envs (EULA_PLATFORMS),
+    - NETLAB_MCP_PLATFORMS: comma-separated extra device names,
+    - NETLAB_MCP_ALLOW_INSTALLED=1: any device backed by an image already loaded in
+      the local docker store (it cannot pull anything new, only use what's there).
+    """
     allowed = set(FREE_PLATFORMS)
     for plat, env in EULA_PLATFORMS.items():
         if _truthy(os.environ.get(env)):
             allowed.add(plat)
+    extra = os.environ.get("NETLAB_MCP_PLATFORMS", "")
+    allowed |= {p.strip() for p in extra.split(",") if p.strip()}
+    if _truthy(os.environ.get("NETLAB_MCP_ALLOW_INSTALLED")):
+        from .engine.images import devices_with_images  # lazy: avoids import cycle
+
+        allowed |= devices_with_images()
     return allowed
 
 
@@ -63,10 +77,10 @@ def check_platforms(platforms: list[str]) -> tuple[bool, list[str], str]:
         return True, [], ""
     locked = sorted(EULA_PLATFORMS)
     reason = (
-        f"Platforms not permitted in this MVP: {', '.join(rejected)}. "
-        f"Allowed (free containerlab images): {', '.join(sorted(allowed))}. "
+        f"Platforms not permitted here: {', '.join(rejected)}. "
+        f"Allowed: {', '.join(sorted(allowed))}. "
         f"EULA-gated (set env to enable): {', '.join(locked)}. "
-        "Licensed NOSes (nxos/iosxr/sros/junos/...) are deferred to a future "
-        "self-hosted runner with image entitlements."
+        "Operators can widen the gate with NETLAB_MCP_PLATFORMS=<csv> or "
+        "NETLAB_MCP_ALLOW_INSTALLED=1 (any device with a locally loaded image)."
     )
     return False, rejected, reason

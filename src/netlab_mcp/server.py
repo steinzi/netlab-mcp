@@ -6,16 +6,40 @@ Lab tool (needs docker + containerlab): validate_in_lab.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import yaml
 from fastmcp import FastMCP
 
 from .config import NETLAB_EXAMPLES, allowed_platforms, check_platforms
-from .engine import compat, lab, render, topo, topogen, transform
+from .engine import compat, images, lab, probes, render, topo, topogen, transform, validation
 from .engine.runner import netlab_version
 from .models import DISCLAIMER
 from .store import matrix
 
-mcp = FastMCP("netlab-mcp")
+
+def _auth_from_env():
+    """Optional static bearer auth: NETLAB_MCP_TOKEN or NETLAB_MCP_TOKEN_FILE.
+
+    The file form keeps the secret out of `systemctl show`/process env dumps. No token
+    set -> no auth layer (stdio use, or an external gate like a reverse proxy).
+    """
+    token = (os.environ.get("NETLAB_MCP_TOKEN") or "").strip()
+    token_file = os.environ.get("NETLAB_MCP_TOKEN_FILE")
+    if not token and token_file:
+        try:
+            token = Path(token_file).read_text().strip()
+        except OSError as e:
+            raise SystemExit(f"cannot read NETLAB_MCP_TOKEN_FILE {token_file!r}: {e}") from e
+    if not token:
+        return None
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    return StaticTokenVerifier(tokens={token: {"client_id": "netlab-mcp"}})
+
+
+mcp = FastMCP("netlab-mcp", auth=_auth_from_env())
 
 
 # --- offline tools -------------------------------------------------------------
@@ -44,6 +68,7 @@ def generate_topology(intent: str, platforms: list[str] | None = None) -> dict:
         "validation_errors": check["errors"],
         "notes": gen["notes"],
         "warnings": gen["warnings"],
+        "validation": gen["validation"],
     }
 
 
@@ -85,11 +110,24 @@ def query_compatibility(module: str | None = None, platforms: list[str] | None =
                     f"'{row['verdict']}' (scenario {row['scenario']}, netlab {version})"
                 )
 
+    # Declared support says a platform RUNS a module; it says nothing about whether the
+    # platform can ASSERT it in `netlab validate`. Surface that separately so callers see
+    # "srlinux runs ospf but can't auto-verify it" before deploying.
+    if module:
+        can_assert = {p: validation.device_can_assert(p, module) for p in platforms}
+    else:
+        can_assert = {p: validation.assertable_modules(p) for p in platforms}
+
     return {
         "ok": declared.get("ok", False),
         "netlab_version": version,
         "declared": decl_data,
         "declared_error": declared.get("error"),
+        "validation": {
+            "can_assert": can_assert,
+            "note": "true = device ships a netlab validation plugin for the module; "
+                    "anchor generated validate tests on a capable device.",
+        },
         "observed": observed,
         "conflicts": conflicts,
     }
@@ -176,6 +214,38 @@ def report_failure(
     return {"recorded": True, "module": module, "dut_platform": dut, "stage": stage}
 
 
+@mcp.tool
+def host_check() -> dict:
+    """Diagnose this host's lab readiness in one call — run this first when anything fails.
+
+    Reports docker/containerlab availability + versions, the netlab version, which
+    platforms are allowed, which devices have locally loaded images (deployable without a
+    pull), and which devices can anchor validate tests per module.
+    """
+    probe = probes.lab_available()
+    image_map = images.device_image_map()
+    try:
+        nl_version = netlab_version()
+    except RuntimeError as e:  # doctor must diagnose a netlab-less host, not crash on it
+        nl_version = None
+        probe = {**probe, "ok": False, "reasons": [*probe["reasons"], str(e)]}
+    if nl_version == "unknown":  # binary resolved but does not run (bad NETLAB_MCP_NETLAB_BIN?)
+        probe = {**probe, "ok": False,
+                 "reasons": [*probe["reasons"], "netlab executable does not run or reports "
+                                                "no version; check NETLAB_MCP_NETLAB_BIN"]}
+    return {
+        "ok": probe["ok"],
+        "lab_available": probe,
+        "versions": {"netlab": nl_version, **probes.tool_versions()},
+        "allowed_platforms": sorted(allowed_platforms()),
+        "installed_device_images": image_map,
+        "validation_plugins": {
+            module: validation.capable_devices(module)
+            for module in sorted(validation.MODULE_PLUGINS)
+        },
+    }
+
+
 # --- lab tool ------------------------------------------------------------------
 @mcp.tool
 def validate_in_lab(
@@ -199,10 +269,59 @@ def validate_in_lab(
     )
 
 
+# --- health (HTTP transport only) -----------------------------------------------
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):  # noqa: ANN001 - starlette Request, kept import-light
+    """Unauthenticated liveness probe for funnels/uptime checks.
+
+    Deliberately cheap and non-sensitive: no image list, no paths, and the docker probe
+    is cached (~30s) so polling can't fork subprocesses per hit. The probe and the
+    first-call netlab version both shell out, so they run in a worker thread — blocking
+    the event loop here would stall every other request, /mcp included.
+    """
+    import anyio.to_thread
+    from starlette.responses import JSONResponse
+
+    try:
+        version = await anyio.to_thread.run_sync(netlab_version)
+    except RuntimeError:  # netlab_bin() discovery failure — report unhealthy, not a 500
+        version = None
+    probe = await anyio.to_thread.run_sync(probes.lab_available_cached)
+    return JSONResponse({
+        "ok": version is not None and version != "unknown",
+        "netlab_version": version,
+        "lab_available": probe["ok"],
+    })
+
+
 # --- entrypoint ----------------------------------------------------------------
 def main() -> None:
+    """Run over stdio (default) or streamable HTTP.
+
+    NETLAB_MCP_TRANSPORT=http serves /mcp on NETLAB_MCP_HOST:NETLAB_MCP_PORT
+    (default 127.0.0.1:8000). Combine with NETLAB_MCP_TOKEN[_FILE] for bearer auth —
+    mandatory if the host is anything other than loopback, since validate_in_lab reaches
+    docker/sudo on this machine.
+    """
     matrix.init_db()
-    mcp.run()
+    transport = (os.environ.get("NETLAB_MCP_TRANSPORT") or "stdio").strip().lower()
+    if transport in ("http", "streamable-http"):
+        host = os.environ.get("NETLAB_MCP_HOST", "127.0.0.1")
+        port_raw = os.environ.get("NETLAB_MCP_PORT", "8000")
+        try:
+            port = int(port_raw)
+        except ValueError:
+            raise SystemExit(f"NETLAB_MCP_PORT must be a number, got {port_raw!r}") from None
+        if host not in ("127.0.0.1", "localhost", "::1") and mcp.auth is None:
+            raise SystemExit(
+                "refusing to bind HTTP on a non-loopback host without auth; "
+                "set NETLAB_MCP_TOKEN or NETLAB_MCP_TOKEN_FILE (or bind to 127.0.0.1)."
+            )
+        mcp.run(transport="http", host=host, port=port)
+    elif transport == "stdio":
+        mcp.run()
+    else:
+        raise SystemExit(f"unknown NETLAB_MCP_TRANSPORT '{transport}' (use stdio or http)")
 
 
 if __name__ == "__main__":

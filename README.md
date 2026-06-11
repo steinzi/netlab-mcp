@@ -45,6 +45,7 @@ rebuild that pipeline. It exposes netlab's *outputs* to an LLM and records what 
 | `get_known_good` | offline | ✅ | return a previously lab-passed topology + config |
 | `list_examples` | offline | — | index netlab's integration test topologies |
 | `report_failure` | offline | — | record a negative result into the matrix |
+| `host_check` | offline | — | doctor: lab readiness, versions, loaded images, validation plugins |
 | `validate_in_lab` | **lab** | ✅ | deploy + `netlab validate` + record verdict |
 
 `Mode`: *offline* needs no docker; *lab* requires docker + containerlab. `Disclaimer`: ✅ responses embed
@@ -131,6 +132,46 @@ Full threat model — including what the guardrails explicitly do *not* protect 
 | `NETLAB_MCP_STORE` | store dir for the matrix db + artifacts (default: `./store`) |
 | `NETLAB_MCP_WORKDIR` | base dir for per-request temp workdirs (default: `./.work`) |
 | `NETLAB_MCP_ACCEPT_CEOS_EULA` | set truthy to allow the EULA-gated `ceos` image |
+| `NETLAB_MCP_PLATFORMS` | comma-separated extra device names to allow past the free set |
+| `NETLAB_MCP_ALLOW_INSTALLED` | set truthy to allow any device backed by a locally loaded docker image |
+| `NETLAB_MCP_TRANSPORT` | `stdio` (default) or `http` (streamable HTTP on `/mcp`) |
+| `NETLAB_MCP_HOST` / `NETLAB_MCP_PORT` | HTTP bind address (default `127.0.0.1:8000`) |
+| `NETLAB_MCP_TOKEN` / `NETLAB_MCP_TOKEN_FILE` | enable static bearer auth on the HTTP transport |
+
+### HTTP transport
+
+```bash
+NETLAB_MCP_TRANSPORT=http NETLAB_MCP_TOKEN_FILE=/etc/netlab-mcp/token netlab-mcp
+```
+
+serves MCP on `http://127.0.0.1:8000/mcp` (`Authorization: Bearer <token>`) plus an
+**unauthenticated** `GET /health` liveness probe (cheap, non-sensitive — safe to expose to
+uptime checks). A non-loopback `NETLAB_MCP_HOST` is refused unless a token is configured:
+`validate_in_lab` reaches docker/sudo on this machine, so the token is effectively
+root-equivalent — treat it accordingly and prefer `NETLAB_MCP_TOKEN_FILE` (mode 0600) over
+the bare env var. Client config:
+
+```json
+{
+  "mcpServers": {
+    "netlab": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+Systemd unit sketch:
+
+```ini
+[Service]
+Environment=NETLAB_MCP_TRANSPORT=http
+Environment=NETLAB_MCP_TOKEN_FILE=/etc/netlab-mcp/token
+ExecStart=/opt/netlab-mcp/.venv/bin/netlab-mcp
+User=netlab
+```
 
 ## Architecture
 

@@ -8,10 +8,69 @@ from __future__ import annotations
 from ..config import check_platforms
 from ..models import DISCLAIMER, GOOD_VERDICTS, VALIDATE_EXIT
 from ..store import matrix
+from . import images, validation
 from .probes import lab_available
 from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
 from .transform import resolved_node_devices, resolved_tools
+
+
+def _explain_no_tests(
+    topology_yaml: str, module: str, node_device: dict[str, str], output: str,
+) -> dict:
+    """Turn a 'no_tests' verdict into {reason, suggestion} the caller can act on.
+
+    Three distinct causes look identical from the exit code alone: the topology has no
+    `validate:` block, the tests exist but the anchoring device has no validation plugin
+    (netlab silently skips them), or netlab ran zero real tests for another reason.
+    """
+    capable = sorted(n for n, d in node_device.items()
+                     if validation.device_can_assert(d, module))
+    anchor_hint = (
+        f"anchor the validate test on one of: {', '.join(capable)}" if capable
+        else f"no node in this topology can assert {module}; add one with a device from: "
+             f"{', '.join(validation.capable_devices(module)) or 'none in this netlab version'}"
+    )
+
+    if "validate:" not in topology_yaml:
+        return {
+            "reason": f"topology has no validate: block, so there are no tests for {module}",
+            "suggestion": "regenerate with generate_topology (it adds a validate test when "
+                          f"a capable device is present) or add one by hand; {anchor_hint}",
+        }
+    low = output.lower()
+    if "cannot find validation plugin" in low or "test action not defined" in low:
+        return {
+            "reason": "validate tests exist but the node they run on has no netlab "
+                      f"validation plugin for {module}, so they were skipped",
+            "suggestion": anchor_hint,
+        }
+    return {
+        "reason": "netlab ran zero real tests (skipped or unreliable results)",
+        "suggestion": f"check raw_validate_output; {anchor_hint}",
+    }
+
+
+def _pull_failure_hint(errors: list[str], devices: set[str]) -> str | None:
+    """When a deploy died fetching an image, point at locally loaded alternatives.
+
+    generate_topology pins images, but caller-supplied / list_examples topologies are
+    deliberately not mutated — so on hosts whose local-only (vrnetlab-built) tags differ
+    from netlab's defaults, `netlab up` hits an unpullable image and the error reads like
+    a broken host. Name the fix instead of leaving the caller to guess.
+    """
+    err_text = " ".join(errors).lower()
+    if not any(m in err_text for m in ("pull", "not found", "manifest unknown", "no such image")):
+        return None
+    local = {d: img for d, img in images.device_image_map().items() if d in devices}
+    if not local:
+        return None
+    return (
+        "the deploy seems to have failed fetching a container image; these devices have "
+        "locally loaded images — pin them in the topology via "
+        "defaults.devices.<device>.clab.image: "
+        + ", ".join(f"{d} -> {img}" for d, img in sorted(local.items()))
+    )
 
 
 def _record(
@@ -139,7 +198,7 @@ def validate_in_lab(
                         verdict="deploy_failed", stages=stages, version=version,
                         topology_yaml=topology_yaml, per_node={},
                         notes="; ".join(up.error_lines())[:500])
-                return {
+                result = {
                     "ok": False,
                     "verdict": "deploy_failed",
                     "stage": "up",
@@ -148,6 +207,10 @@ def validate_in_lab(
                     "harvested": True,
                     "disclaimer": DISCLAIMER,
                 }
+                hint = _pull_failure_hint(up.error_lines(), derived)
+                if hint:
+                    result["suggestion"] = hint
+                return result
 
             # Render config text for the response (offline, from the snapshot up just built).
             ri = run_netlab(["initial", "-o", "configs"], cwd=wd, timeout=180)
@@ -178,7 +241,7 @@ def validate_in_lab(
                     topology_yaml=topology_yaml, per_node=per_node,
                     notes="; ".join(val.error_lines())[:500] if verdict != "pass" else "")
 
-            return {
+            result = {
                 "ok": verdict in GOOD_VERDICTS,
                 "verdict": verdict,
                 "netlab_version": version,
@@ -188,6 +251,10 @@ def validate_in_lab(
                 "harvested": True,
                 "disclaimer": DISCLAIMER,
             }
+            if verdict == "no_tests":
+                result["no_tests"] = _explain_no_tests(
+                    topology_yaml, module, node_device, val.stdout + val.stderr)
+            return result
         finally:
             run_netlab(["down", "--cleanup", "--force"], cwd=wd, timeout=300)
             if not keep_lab:

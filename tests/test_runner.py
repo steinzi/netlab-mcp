@@ -31,3 +31,16 @@ def test_error_lines_fallback_tail_when_no_markers():
 
 def test_error_lines_empty_when_ok_no_markers():
     assert _r(0, stdout="all good").error_lines() == []
+
+
+def test_run_netlab_never_raises_on_bad_binary(monkeypatch, tmp_path):
+    from netlab_mcp.engine import runner
+
+    monkeypatch.setenv("NETLAB_MCP_NETLAB_BIN", "/nonexistent-netlab")
+    runner.netlab_bin.cache_clear()
+    try:
+        r = runner.run_netlab(["version"], cwd=tmp_path, timeout=10)
+        assert not r.ok and r.returncode == 127
+        assert "cannot execute" in r.stderr
+    finally:
+        runner.netlab_bin.cache_clear()

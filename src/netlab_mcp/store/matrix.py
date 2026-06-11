@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -31,8 +32,13 @@ def _now() -> str:
 
 def _connect() -> sqlite3.Connection:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB))
+    conn = sqlite3.connect(str(_DB), timeout=30)
     conn.row_factory = sqlite3.Row
+    # WAL lets the MCP service read while a CLI sweep writes (and vice versa) instead of
+    # the default rollback journal's whole-file lock; busy_timeout makes a contended writer
+    # wait rather than immediately raising OperationalError up into a tool error.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(_SCHEMA.read_text())
     return conn
 
@@ -189,6 +195,9 @@ def dump_yaml() -> None:
         conn.close()
     records = [_decode(r) for r in rows]
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-    _YAML.write_text(
-        yaml.safe_dump(records, sort_keys=False, default_flow_style=False, width=100)
-    )
+    # Atomic write: every upsert rewrites this whole file, and concurrent writers (service +
+    # CLI sweep) would otherwise interleave into a torn mirror. Write a temp then rename.
+    text = yaml.safe_dump(records, sort_keys=False, default_flow_style=False, width=100)
+    tmp = _YAML.with_name(f"{_YAML.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, _YAML)

@@ -14,6 +14,12 @@ from .render import _parse_configs, _read
 from .runner import LAB_LOCK, cleanup, netlab_version, new_workdir, run_netlab
 from .transform import resolved_node_devices, resolved_tools
 
+# Bounds on the caller-supplied per-stage timeout. `timeout_s` gates `up` and `validate`,
+# and the whole deploy holds LAB_LOCK — an unbounded value lets one call wedge every other
+# lab request, so clamp it to a sane window.
+MIN_TIMEOUT_S = 30
+MAX_TIMEOUT_S = 1800
+
 
 def _explain_no_tests(
     topology_yaml: str, module: str, node_device: dict[str, str], output: str,
@@ -88,7 +94,10 @@ def _record(
 ) -> dict:
     topology_ref = config_ref = None
     if verdict in GOOD_VERDICTS:
-        key = f"{module}-{dut_platform}-{'-'.join(sorted(peers))}-{version}"
+        # scenario is part of the matrix UNIQUE key, so it belongs in the artifact key too —
+        # otherwise two scenarios with the same module/dut/peers/version overwrite each
+        # other's cached topology+config in one shared dir.
+        key = f"{module}-{scenario}-{dut_platform}-{'-'.join(sorted(peers))}-{version}"
         topology_ref, config_ref = matrix.cache_artifacts(key, topology_yaml, per_node)
     rec = {
         "module": module,
@@ -120,6 +129,7 @@ def validate_in_lab(
     timeout_s: int = 600,
 ) -> dict:
     """Deploy + validate a topology in containerlab and persist the verdict."""
+    timeout_s = max(MIN_TIMEOUT_S, min(timeout_s, MAX_TIMEOUT_S))
     # Policy checks run on netlab's RESOLVED node devices, before any probe or deploy, so
     # disallowed NOSes are rejected regardless of the caller's `platforms` claim — and we
     # fail closed when devices can't be resolved (no metadata-absence loophole).
@@ -155,6 +165,17 @@ def validate_in_lab(
     # allow-list during `netlab up`. Reject any topology that declares them — the device
     # allow-list alone does not cover this spawn vector. `--no-tools` below is the backstop.
     tools = resolved_tools(topology_yaml)
+    if not tools["ok"]:
+        # Could not resolve the tools section — fail closed rather than rely solely on the
+        # `--no-tools` backstop below (the first inspect at L126 succeeded, so a failure here
+        # is anomalous and we refuse instead of guessing "no tools").
+        return {
+            "ok": False,
+            "verdict": "invalid",
+            "reason": "could not resolve the topology's external tools; refusing to deploy",
+            "errors": tools.get("errors", []),
+            "disclaimer": DISCLAIMER,
+        }
     if tools["tools"]:
         return {
             "ok": False,

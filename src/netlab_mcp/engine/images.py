@@ -58,7 +58,9 @@ def _netlab_default_clab_images() -> dict[str, str]:
         r = run_netlab(["show", "images", "--format", "yaml"], cwd=wd, timeout=60)
         if not r.ok:
             return {}
-        data = yaml.safe_load(r.stdout) or {}
+        data = yaml.safe_load(r.stdout)
+        if not isinstance(data, dict):  # unexpected output shape (e.g. a bare scalar/list)
+            return {}
         return {
             dev: spec["clab"]
             for dev, spec in data.items()

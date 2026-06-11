@@ -6,15 +6,21 @@ from netlab_mcp.engine.lab import _explain_no_tests
 
 
 # --- device_can_assert: introspects the installed netlab ------------------------
-def test_capability_matches_installed_netlab():
-    # Ground truth for netlab 26.06: netsim/validate/{ospf,bgp}/{eos,frr}.py, isis/frr.py.
+def test_capability_matches_installed_plugin_registry():
+    # Version-proof: compare against the installed netsim/validate tree itself instead of
+    # hard-coding one netlab release's plugin inventory (CI floats within >=26.06,<27).
+    from pathlib import Path
+
+    import netsim.validate
+
+    registry = Path(netsim.validate.__file__).parent
+    for device in ("frr", "eos", "srlinux", "cumulus", "linux"):
+        for module in validation.MODULE_PLUGINS:
+            expected = (registry / module / f"{device}.py").is_file()
+            assert validation.device_can_assert(device, module) is expected, (device, module)
+    # canary: frr asserting ospf has held since netlab's validate framework existed —
+    # if this goes, the whole auto-anchor feature needs a fresh look, so fail loudly.
     assert validation.device_can_assert("frr", "ospf")
-    assert validation.device_can_assert("eos", "ospf")
-    assert validation.device_can_assert("frr", "bgp")
-    assert validation.device_can_assert("frr", "isis")
-    assert not validation.device_can_assert("eos", "isis")
-    assert not validation.device_can_assert("srlinux", "ospf")
-    assert not validation.device_can_assert("linux", "bgp")
 
 
 def test_capability_rejects_garbage_without_raising():
@@ -24,12 +30,15 @@ def test_capability_rejects_garbage_without_raising():
     assert not validation.device_can_assert("frr", "../../etc")
 
 
-def test_pick_validation_node_prefers_non_dut():
-    nd = {"dut": "frr", "peer": "frr"}
+def test_pick_validation_node_prefers_non_dut(monkeypatch):
+    # Selection logic only — capability is stubbed so the test can't drift with the
+    # installed netlab's plugin inventory.
+    monkeypatch.setattr(validation, "device_can_assert", lambda d, m: d == "capable")
+    nd = {"dut": "capable", "peer": "capable"}
     assert validation.pick_validation_node(nd, "ospf") == "peer"
-    nd = {"dut": "frr", "peer": "srlinux"}
+    nd = {"dut": "capable", "peer": "other"}
     assert validation.pick_validation_node(nd, "ospf") == "dut"
-    nd = {"dut": "srlinux", "peer": "srlinux"}
+    nd = {"dut": "other", "peer": "other"}
     assert validation.pick_validation_node(nd, "ospf") is None
 
 
@@ -45,13 +54,14 @@ def test_ospf_emits_validate_anchored_on_capable_peer():
     assert gen["validation"]["node"] == "peer"
 
 
-def test_ospf_without_capable_device_warns_structured():
+def test_ospf_without_capable_device_warns_structured(monkeypatch):
+    monkeypatch.setattr(validation, "device_can_assert", lambda d, m: False)
     gen = topogen.generate("ospf", ["srlinux", "srlinux"])
     topo = yaml.safe_load(gen["topology_yaml"])
     assert "validate" not in topo
     w = gen["validation"]["warning"]
     assert w["code"] == "no_validation_node"
-    assert "frr" in w["capable_devices"]
+    assert w["capable_devices"] == validation.capable_devices("ospf")
     assert any("cannot be auto-verified" in s for s in gen["warnings"])
 
 

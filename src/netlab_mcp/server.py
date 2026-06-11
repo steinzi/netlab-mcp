@@ -112,22 +112,25 @@ def query_compatibility(module: str | None = None, platforms: list[str] | None =
 
     # Declared support says a platform RUNS a module; it says nothing about whether the
     # platform can ASSERT it in `netlab validate`. Surface that separately so callers see
-    # "srlinux runs ospf but can't auto-verify it" before deploying.
+    # "srlinux runs ospf but can't auto-verify it" before deploying. Distinct keys per
+    # shape — `can_assert` is always {platform: bool}, `assertable_modules` always
+    # {platform: [module]} — so the output type never depends on the arguments.
+    validation_out: dict = {
+        "assertable_modules": {p: validation.assertable_modules(p) for p in platforms},
+        "note": "a device can anchor generated validate tests only for modules it ships "
+                "a netlab validation plugin for.",
+    }
     if module:
-        can_assert = {p: validation.device_can_assert(p, module) for p in platforms}
-    else:
-        can_assert = {p: validation.assertable_modules(p) for p in platforms}
+        validation_out["can_assert"] = {
+            p: validation.device_can_assert(p, module) for p in platforms
+        }
 
     return {
         "ok": declared.get("ok", False),
         "netlab_version": version,
         "declared": decl_data,
         "declared_error": declared.get("error"),
-        "validation": {
-            "can_assert": can_assert,
-            "note": "true = device ships a netlab validation plugin for the module; "
-                    "anchor generated validate tests on a capable device.",
-        },
+        "validation": validation_out,
         "observed": observed,
         "conflicts": conflicts,
     }

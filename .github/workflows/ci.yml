@@ -23,7 +23,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # netlab SOURCE tree: list_examples (+ its MCP test) reads tests/integration from here;
       # the test skips gracefully if absent, so this is also cheap insurance.
@@ -66,7 +66,7 @@ jobs:
     name: build & install verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -100,7 +100,7 @@ jobs:
     name: ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
